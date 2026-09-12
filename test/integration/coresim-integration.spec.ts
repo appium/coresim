@@ -56,6 +56,30 @@ function isIOSRuntime(runtimeIdentifier: string): boolean {
   return runtimeIdentifier.includes('.SimRuntime.iOS-');
 }
 
+/**
+ * Reads a permission's current grant state straight out of the simulator's own TCC.db — the same
+ * database grantPermission/revokePermission/resetPermission write to (see CLAUDE.md) — so these
+ * tests verify the actual persisted effect, not just that the call didn't throw.
+ *
+ * @returns `true`/`false` if a row exists, `undefined` if the permission is unset (no row, e.g.
+ * after resetPermission)
+ */
+function readTCCGranted(udid: string, tccService: string, bundleId: string): boolean | undefined {
+  const dbPath = path.join(os.homedir(), 'Library/Developer/CoreSimulator/Devices', udid, 'data/Library/TCC/TCC.db');
+  const query = (sql: string) =>
+    Number(execFileSync('sqlite3', ['-line', dbPath, sql], {encoding: 'utf8'}).split('=')[1]?.trim() ?? '0');
+  const rowExists =
+    query(`SELECT count(*) FROM access WHERE service='${tccService}' AND client='${bundleId}' AND client_type=0`) > 0;
+  if (!rowExists) {
+    return undefined;
+  }
+  return (
+    query(
+      `SELECT count(*) FROM access WHERE service='${tccService}' AND client='${bundleId}' AND client_type=0 AND auth_value=2`,
+    ) > 0
+  );
+}
+
 interface RuntimeFixture {
   runtimeIdentifier: string;
   runtimeName: string;
@@ -203,17 +227,17 @@ describe('NativeSimctl integration', () => {
         await sim.pushNotification(device!.udid, 'com.appium.coresim.doesnotexist', {aps: {alert: 'hi'}});
       });
 
-      it('rejects grantPermission/revokePermission/resetPermission with a typed error', async () => {
-        // Confirmed empirically: these fail with NSPOSIXErrorDomain/EPERM even with a real
-        // installed bundle and a valid permission name, while the exact same operation succeeds
-        // via the signed `simctl` CLI on this same machine — a TCC/entitlement check tied to the
-        // *calling process*'s code signature, not something this addon's own code can fix (see
-        // CLAUDE.md). This asserts the plumbing still surfaces a clean, catchable, typed error
-        // instead of crashing — not that the grant actually takes effect.
+      it('grants, revokes, and resets a privacy permission, verified against the simulator TCC database', async () => {
         const bundleId = 'com.appium.coresim.doesnotexist';
-        await assert.rejects(() => sim.grantPermission(device!.udid, 'location', bundleId), /NativeSimOperationError/);
-        await assert.rejects(() => sim.revokePermission(device!.udid, 'location', bundleId), /NativeSimOperationError/);
-        await assert.rejects(() => sim.resetPermission(device!.udid, 'location', bundleId), /NativeSimOperationError/);
+
+        await sim.grantPermission(device!.udid, 'camera', bundleId);
+        assert.strictEqual(readTCCGranted(device!.udid, 'kTCCServiceCamera', bundleId), true);
+
+        await sim.revokePermission(device!.udid, 'camera', bundleId);
+        assert.strictEqual(readTCCGranted(device!.udid, 'kTCCServiceCamera', bundleId), false);
+
+        await sim.resetPermission(device!.udid, 'camera', bundleId);
+        assert.strictEqual(readTCCGranted(device!.udid, 'kTCCServiceCamera', bundleId), undefined);
       });
 
       if (isIOSRuntime(fixture.runtimeIdentifier)) {

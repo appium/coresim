@@ -11,6 +11,7 @@ export {
   type SimBootInfo,
   type SimDeviceInfo,
   type SimDeviceTypeInfo,
+  type SimPermissionService,
   type SimRuntimeInfo,
   type SpawnOptions,
 } from './types.js';

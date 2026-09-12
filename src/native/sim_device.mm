@@ -52,6 +52,7 @@ NSUUID* DeviceUDID(id device) { return IdGetter(device, "UDID"); }
 NSString* DeviceName(id device) { return IdGetter(device, "name"); }
 id DeviceDeviceType(id device) { return IdGetter(device, "deviceType"); }
 id DeviceRuntime(id device) { return IdGetter(device, "runtime"); }
+NSString* DeviceDataPath(id device) { return IdGetter(device, "dataPath"); }
 
 unsigned long long DeviceState(id device) {
   static const std::string kSelectorName = "state";
@@ -263,26 +264,6 @@ BOOL SetContentSizeCategory(id device, long long category, NSError** error) {
   return SafeInvoke([&] {
     using Fn = BOOL (*)(id, SEL, long long, NSError**);
     return ((Fn)objc_msgSend)(device, selector, category, error);
-  });
-}
-
-BOOL SetPrivacyAccess(id device, NSString* service, NSString* bundleID, BOOL granted, NSError** error) {
-  static const std::string kSelectorName = "setPrivacyAccessForService:bundleID:granted:error:";
-  RequireSelector(device, kSelectorName);
-  SEL selector = SelectorNamed(kSelectorName);
-  return SafeInvoke([&] {
-    using Fn = BOOL (*)(id, SEL, NSString*, NSString*, BOOL, NSError**);
-    return ((Fn)objc_msgSend)(device, selector, service, bundleID, granted, error);
-  });
-}
-
-BOOL ResetPrivacyAccess(id device, NSString* service, NSString* bundleID, NSError** error) {
-  static const std::string kSelectorName = "resetPrivacyAccessForService:bundleID:error:";
-  RequireSelector(device, kSelectorName);
-  SEL selector = SelectorNamed(kSelectorName);
-  return SafeInvoke([&] {
-    using Fn = BOOL (*)(id, SEL, NSString*, NSString*, NSError**);
-    return ((Fn)objc_msgSend)(device, selector, service, bundleID, error);
   });
 }
 

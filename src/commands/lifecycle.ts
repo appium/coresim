@@ -22,16 +22,6 @@ declare module '../native-simctl.js' {
   }
 }
 
-function toDeviceInfo(device: NativeDeviceHandle): SimDeviceInfo {
-  return {
-    udid: device.udid(),
-    name: device.name(),
-    state: device.state() as SimDeviceState,
-    deviceTypeIdentifier: device.deviceTypeIdentifier(),
-    runtimeIdentifier: device.runtimeIdentifier(),
-  };
-}
-
 /** @returns every device in the default device set. */
 export async function getDevices(this: NativeSimctl): Promise<SimDeviceInfo[]> {
   return runCatchingAsync(async () => {
@@ -158,4 +148,14 @@ export async function shutdownDevice(this: NativeSimctl, udid: string): Promise<
  */
 export async function eraseDevice(this: NativeSimctl, udid: string): Promise<void> {
   return runCatchingAsync(async () => (await this._findDevice(udid)).erase());
+}
+
+function toDeviceInfo(device: NativeDeviceHandle): SimDeviceInfo {
+  return {
+    udid: device.udid(),
+    name: device.name(),
+    state: device.state() as SimDeviceState,
+    deviceTypeIdentifier: device.deviceTypeIdentifier(),
+    runtimeIdentifier: device.runtimeIdentifier(),
+  };
 }

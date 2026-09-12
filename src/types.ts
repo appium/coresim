@@ -70,6 +70,26 @@ export interface SimBootInfo {
 }
 
 /**
+ * A privacy permission grantable via `NativeSimctl.grantPermission`/`revokePermission`/
+ * `resetPermission`. Each is backed by a row in the simulator's own TCC (privacy) database —
+ * `location` isn't included since CoreLocation simulation has its own subsystem, not a plain TCC
+ * row (see CLAUDE.md).
+ */
+export type SimPermissionService =
+  | 'calendar'
+  | 'camera'
+  | 'contacts'
+  | 'health'
+  | 'homekit'
+  | 'medialibrary'
+  | 'microphone'
+  | 'motion'
+  | 'photos'
+  | 'reminders'
+  | 'siri'
+  | 'speech';
+
+/**
  * Options for `NativeSimctl.spawnProcess`, passed through to CoreSimulator's
  * `spawnWithPath:options:terminationQueue:terminationHandler:error:`. Only keys confirmed
  * empirically (see CLAUDE.md) are typed here. CoreSimulator also recognizes

@@ -323,8 +323,9 @@ lifecycle (create/boot/getenv/erase — `eraseDevice` runs last, since it requir
 leaves the device that way), location/Darwin notifications (post + get/set state), UI settings
 (appearance/increase-contrast/content-size), keychain, `pushNotification`, `spawnProcess`
 (streaming + `kill()`), and a `grantPermission`/`revokePermission`/`resetPermission` check that
-confirms the current, real EPERM behavior rather than a successful grant (see "Empirically
-confirmed behavior"). App-lifecycle checks (`installApp`/`isAppInstalled`/`appInfo`/
+verifies the actual persisted effect by reading the row straight out of the simulator's own TCC.db
+(see "Empirically confirmed behavior"), not just that the call didn't throw. App-lifecycle checks
+(`installApp`/`isAppInstalled`/`appInfo`/
 `installedApps`/`launchApp`/`terminateApp`/`removeApp`) and `openUrl` are gated to iOS runtimes
 only (`isIOSRuntime()`) since tvOS/watchOS/visionOS can't install an iOS `.app` or don't ship a
 general-purpose browser. `test/fixtures.ts`'s `getUIKitCatalogPath()` downloads and caches the
@@ -467,19 +468,35 @@ runner default.
   payload before this fix — `coresim.mm`'s `SendPushNotification` now converts the JS payload
   object straight to `NSDictionary` via `JsValueToNSObject` (the same bridge `options` dicts use
   elsewhere), never through `JSON.stringify`+`NSData`.
-- **`grantPermission`/`revokePermission`/`resetPermission` fail with `NSPOSIXErrorDomain`/`EPERM`
-  when called from this addon, even with a real installed bundle and a valid permission name —
-  while `xcrun simctl privacy grant <perm> <bundleId>` succeeds for the exact same device/bundle
-  from the same unprivileged shell user.** Confirmed empirically, including via a standalone probe
-  calling `setPrivacyAccessForService:bundleID:granted:error:` directly (bypassing this addon
-  entirely) — not an argument-marshaling bug like the two findings above. The real `simctl` binary
-  is signed by Apple; a plain Node.js process calling the identical private CoreSimulator method
-  is not, and privacy/TCC-database writes are gated on the *calling process*'s code signature/
-  entitlements, checked at the OS level (or via an XPC service like `tccd`) below where our own
-  argument marshaling could intervene — not something fixable in this addon's own code without a
-  matching entitlement no ordinary npm package can obtain. `test/integration/coresim-integration.spec.ts`
-  asserts the current, confirmed reality (`NativeSimOperationError`, not a crash) rather than a
-  successful grant.
+- **CoreSimulator's own `setPrivacyAccessForService:bundleID:granted:error:` fails with
+  `NSPOSIXErrorDomain`/`EPERM` when called from this addon, even with a real installed bundle and a
+  valid permission name — while `xcrun simctl privacy grant <perm> <bundleId>` succeeds for the
+  exact same device/bundle from the same unprivileged shell user.** Confirmed empirically, including
+  via a standalone probe calling that selector directly (bypassing this addon entirely) — not an
+  argument-marshaling bug like the two findings above. The real `simctl` binary is signed by Apple;
+  a plain Node.js process calling the identical private CoreSimulator method is not, and
+  privacy/TCC-database writes through that method are gated on the *calling process*'s code
+  signature/entitlements, checked at the OS level (or via an XPC service like `tccd`) below where
+  our own argument marshaling could intervene.
+  **`grantPermission`/`revokePermission`/`resetPermission` therefore bypass that method entirely**
+  (`native/tcc_privacy.mm`): they write directly to the simulator's own TCC (privacy) SQLite
+  database at `<device dataPath>/Library/TCC/TCC.db` — `DELETE FROM access WHERE service=? AND
+  client=? AND client_type=0`, then (unless resetting) `INSERT`/`REPLACE INTO access (...)` with the
+  granted/denied value. This is a plain file write, not a call through the entitlement-gated XPC
+  path, so it works from an unsigned process. Schema is checked at runtime (`PRAGMA
+  table_info(access)` for an `auth_value` column) rather than assumed from an OS version threshold,
+  since the schema tracks the *simulator's* iOS release, not the host's: iOS 14+ uses an
+  `auth_value` int column (`0`=denied, `2`=granted; `kTCCServicePhotos` rows additionally use
+  `auth_version=2`), older releases use a boolean `allowed` column. Opening the database uses
+  `SQLITE_OPEN_READWRITE` only (no `_CREATE`) so a device that's never been booted (TCC.db doesn't
+  exist yet) fails with a clear error instead of silently creating an empty, schema-less database;
+  `sqlite3_busy_timeout` (5s) handles the simulator's own `tccd` transiently holding the file open,
+  rather than a manual sleep/retry loop. `location`/`location-always` are **not** supported this way
+  — CoreLocation simulation has its own subsystem, not a plain TCC row — so `SimPermissionService`
+  (`types.ts`) deliberately excludes them. `commands/permissions.ts` maps each friendly service name
+  (`camera`, `contacts`, `photos`, ...) to its internal `kTCCService*` identifier before this call.
+  `binding.gyp` links `-lsqlite3` (a public, stable system library — unlike `CoreSimulator.framework`
+  this needs no `dlopen`/availability guard) and builds `native/tcc_privacy.mm`.
 - **A throwaway self-signed cert (`openssl req -x509 ...`, content irrelevant) is enough to
   exercise `addCertificate`/`addRootCertificate`/`resetKeychain`** — confirmed to succeed
   regardless of the cert's actual validity/trust chain. Adding the *same* cert content twice to

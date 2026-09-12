@@ -13,6 +13,12 @@ unsigned long long DeviceState(id device);
 id DeviceDeviceType(id device);
 id DeviceRuntime(id device);
 
+// -[SimDevice dataPath] -> the device's `data` directory
+// (~/Library/Developer/CoreSimulator/Devices/<udid>/data), the root of everything the guest OS
+// considers its own filesystem (app containers, Library, etc.) — used to locate TCC.db for
+// privacy-permission access (see tcc_privacy.h).
+NSString* DeviceDataPath(id device);
+
 // -[SimDevice bootWithOptions:error:]
 BOOL Boot(id device, NSDictionary* options, NSError** error);
 
@@ -101,12 +107,6 @@ BOOL SetIncreaseContrastEnabled(id device, BOOL enabled, NSError** error);
 // -[SimDevice(Accessibility) currentContentSizeCategory] / setContentSizeCategory:error:
 long long CurrentContentSizeCategory(id device);
 BOOL SetContentSizeCategory(id device, long long category, NSError** error);
-
-// -[SimDevice(SimPrivacyAccess) setPrivacyAccessForService:bundleID:granted:error:]
-BOOL SetPrivacyAccess(id device, NSString* service, NSString* bundleID, BOOL granted, NSError** error);
-
-// -[SimDevice(SimPrivacyAccess) resetPrivacyAccessForService:bundleID:error:]
-BOOL ResetPrivacyAccess(id device, NSString* service, NSString* bundleID, NSError** error);
 
 // -[SimDevice darwinNotificationGetState:name:error:]
 BOOL DarwinNotificationGetState(id device, unsigned long long* outState, NSString* name, NSError** error);

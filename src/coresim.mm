@@ -23,6 +23,7 @@
 #include "native/sim_device.h"
 #include "native/sim_device_set.h"
 #include "native/sim_service_context.h"
+#include "native/tcc_privacy.h"
 #include "native/value_bridge.h"
 
 namespace coresim {
@@ -360,13 +361,17 @@ class NativeDevice : public Napi::ObjectWrap<NativeDevice> {
   Napi::Value GrantPermission(const Napi::CallbackInfo& info) { return SetPermission(info, YES); }
   Napi::Value RevokePermission(const Napi::CallbackInfo& info) { return SetPermission(info, NO); }
 
+  // Writes directly to the simulator's own TCC.db instead of calling CoreSimulator's
+  // setPrivacyAccessForService:bundleID:granted:error: — that private method requires the calling
+  // process to hold an entitlement no ordinary npm package can obtain (see CLAUDE.md).
   Napi::Value SetPermission(const Napi::CallbackInfo& info, BOOL granted) {
     id device = device_;
     NSString* service = @(info[0].As<Napi::String>().Utf8Value().c_str());
     NSString* bundleId = @(info[1].As<Napi::String>().Utf8Value().c_str());
     return RunAsyncVoid(info.Env(), [device, service, bundleId, granted]() {
       NSError* error = nil;
-      ThrowIfFailed(coresim::SetPrivacyAccess(device, service, bundleId, granted, &error), error);
+      NSString* dataPath = coresim::DeviceDataPath(device);
+      ThrowIfFailed(coresim::SetTCCAccess(dataPath, service, bundleId, granted, &error), error);
     });
   }
 
@@ -376,7 +381,8 @@ class NativeDevice : public Napi::ObjectWrap<NativeDevice> {
     NSString* bundleId = @(info[1].As<Napi::String>().Utf8Value().c_str());
     return RunAsyncVoid(info.Env(), [device, service, bundleId]() {
       NSError* error = nil;
-      ThrowIfFailed(coresim::ResetPrivacyAccess(device, service, bundleId, &error), error);
+      NSString* dataPath = coresim::DeviceDataPath(device);
+      ThrowIfFailed(coresim::ResetTCCAccess(dataPath, service, bundleId, &error), error);
     });
   }
 
