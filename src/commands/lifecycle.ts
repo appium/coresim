@@ -135,7 +135,10 @@ export async function waitForBoot(this: NativeSimctl, udid: string, options: {ti
   });
 }
 
-/** @param udid — UDID of the device to shut down */
+/**
+ * @param udid — UDID of the device to shut down
+ * @throws if the device is already `Shutdown` — this is not an idempotent no-op
+ */
 export async function shutdownDevice(this: NativeSimctl, udid: string): Promise<void> {
   return runCatchingAsync(async () => (await this._findDevice(udid)).shutdown());
 }
@@ -145,6 +148,7 @@ export async function shutdownDevice(this: NativeSimctl, udid: string): Promise<
  * {@link shutdownDevice} first if it's booted (see CLAUDE.md).
  *
  * @param udid — UDID of the device to erase
+ * @throws if the device isn't currently `Shutdown`
  */
 export async function eraseDevice(this: NativeSimctl, udid: string): Promise<void> {
   return runCatchingAsync(async () => (await this._findDevice(udid)).erase());
