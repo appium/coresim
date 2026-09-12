@@ -199,9 +199,25 @@ describe('NativeSimctl integration', () => {
 
       it('gets and sets Darwin notification state', async () => {
         const name = 'com.appium.coresim.test.state';
-        assert.strictEqual(await sim.getDarwinNotificationState(device!.udid, name), 0);
-        await sim.setDarwinNotificationState(device!.udid, name, 1);
-        assert.strictEqual(await sim.getDarwinNotificationState(device!.udid, name), 1);
+        assert.strictEqual(await sim.getDarwinNotificationState(device!.udid, name), 0n);
+        await sim.setDarwinNotificationState(device!.udid, name, 1n);
+        assert.strictEqual(await sim.getDarwinNotificationState(device!.udid, name), 1n);
+      });
+
+      it('round-trips Darwin notification state beyond Number.MAX_SAFE_INTEGER', async () => {
+        // 2^53 + 1 — the smallest integer a JS `number` can no longer represent exactly, so a
+        // successful round trip here proves the value survives as a real bigint, not a double.
+        const name = 'com.appium.coresim.test.state.large';
+        const large = 2n ** 53n + 1n;
+        assert.ok(large > BigInt(Number.MAX_SAFE_INTEGER));
+        await sim.setDarwinNotificationState(device!.udid, name, large);
+        assert.strictEqual(await sim.getDarwinNotificationState(device!.udid, name), large);
+      });
+
+      it('rejects setDarwinNotificationState with an out-of-range bigint', async () => {
+        const name = 'com.appium.coresim.test.state.invalid';
+        await assert.rejects(() => sim.setDarwinNotificationState(device!.udid, name, -1n));
+        await assert.rejects(() => sim.setDarwinNotificationState(device!.udid, name, 2n ** 64n));
       });
 
       it('gets and sets UI appearance, increase contrast, and content size', async () => {

@@ -215,8 +215,8 @@ export interface NativeDeviceHandle {
   grantPermission(service: string, bundleId: string): Promise<void>;
   revokePermission(service: string, bundleId: string): Promise<void>;
   resetPermission(service: string, bundleId: string): Promise<void>;
-  darwinNotificationGetState(name: string): Promise<number>;
-  darwinNotificationSetState(name: string, state: number): Promise<void>;
+  darwinNotificationGetState(name: string): Promise<bigint>;
+  darwinNotificationSetState(name: string, state: bigint): Promise<void>;
   postDarwinNotification(name: string): Promise<void>;
   spawn(path: string, options: SpawnOptions | undefined, onExit: NativeSpawnExitCallback): Promise<NativeSpawnResult>;
 }

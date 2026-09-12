@@ -15,6 +15,8 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <cerrno>
+#include <cstring>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -56,6 +58,18 @@ void ThrowIfFailed(BOOL ok, NSError* error) {
   if (!ok && error != nil) {
     throw NSErrorException(error);
   }
+}
+
+// dup() failure (e.g. EMFILE — the process fd table is full) — surfaced as a normal catchable
+// error via ThrowIfFailed's own throw path, rather than an fd of -1 silently reaching JS.
+NSError* MakeDescriptorError(NSString* which, int savedErrno) {
+  return [NSError errorWithDomain:NSPOSIXErrorDomain
+                             code:savedErrno
+                         userInfo:@{
+                           NSLocalizedDescriptionKey : [NSString
+                               stringWithFormat:@"Failed to duplicate the spawned process's %@ file descriptor: %s",
+                                                which, strerror(savedErrno)]
+                         }];
 }
 
 // Plain data Spawn()'s work lambda (background thread) hands to its toValue callback (main
@@ -443,16 +457,25 @@ class NativeDevice : public Napi::ObjectWrap<NativeDevice> {
           ThrowIfFailed(coresim::DarwinNotificationGetState(device, &state, name, &error), error);
           return state;
         },
-        [](Napi::Env env, unsigned long long state) -> Napi::Value {
-          return Napi::Number::New(env, static_cast<double>(state));
-        });
+        // A JS `number` (double) only has 53 bits of integer precision — this state is a full
+        // 64-bit value any process can stuff an arbitrary counter or bit field into (see
+        // commands/darwin-notification.ts), so it's exposed as a bigint instead, via the matching
+        // Node-API uint64 conversion, rather than silently rounding it on the way out.
+        [](Napi::Env env, unsigned long long state) -> Napi::Value { return Napi::BigInt::New(env, state); });
   }
 
   Napi::Value DarwinNotificationSetState(const Napi::CallbackInfo& info) {
     id device = device_;
     NSString* name = @(info[0].As<Napi::String>().Utf8Value().c_str());
-    unsigned long long state = static_cast<unsigned long long>(info[1].As<Napi::Number>().Int64Value());
-    return RunAsyncVoid(info.Env(), [device, name, state]() {
+    bool lossless = false;
+    unsigned long long state = info[1].As<Napi::BigInt>().Uint64Value(&lossless);
+    // Checked inside the async lambda (not thrown synchronously here) so an out-of-range bigint
+    // rejects the returned promise like every other failure this method can have, instead of
+    // throwing synchronously and behaving inconsistently with the rest of the async API surface.
+    return RunAsyncVoid(info.Env(), [device, name, state, lossless]() {
+      if (!lossless) {
+        throw std::invalid_argument("state must fit in an unsigned 64-bit integer (0 to 2^64-1)");
+      }
       NSError* error = nil;
       ThrowIfFailed(coresim::DarwinNotificationSetState(device, state, name, &error), error);
     });
@@ -495,6 +518,26 @@ class NativeDevice : public Napi::ObjectWrap<NativeDevice> {
           // reach the read end once the child exits.
           NSPipe* stdoutPipe = [NSPipe pipe];
           NSPipe* stderrPipe = [NSPipe pipe];
+
+          // dup() the read ends — and check both results — before ever starting the process, so a
+          // descriptor-table exhaustion (EMFILE) is reported as a normal catchable error instead of
+          // either leaving an untracked spawned process behind or handing JS an fd of -1 (which
+          // would only surface later, as an opaque failure to wrap it in a net.Socket). The dup()'d
+          // fds must outlive these NSFileHandle/NSPipe objects' own ARC lifetime, which would
+          // otherwise close the original fd out from under Node once nothing in this function
+          // references them anymore (verified empirically necessary).
+          int stdoutFd = dup(stdoutPipe.fileHandleForReading.fileDescriptor);
+          if (stdoutFd < 0) {
+            int savedErrno = errno;
+            throw NSErrorException(MakeDescriptorError(@"stdout", savedErrno));
+          }
+          int stderrFd = dup(stderrPipe.fileHandleForReading.fileDescriptor);
+          if (stderrFd < 0) {
+            int savedErrno = errno;
+            close(stdoutFd);
+            throw NSErrorException(MakeDescriptorError(@"stderr", savedErrno));
+          }
+
           NSMutableDictionary* options = [userOptions mutableCopy];
           options[@"stdout"] = stdoutPipe.fileHandleForWriting;
           options[@"stderr"] = stderrPipe.fileHandleForWriting;
@@ -525,6 +568,8 @@ class NativeDevice : public Napi::ObjectWrap<NativeDevice> {
           } catch (...) {
             [stdoutPipe.fileHandleForWriting closeFile];
             [stderrPipe.fileHandleForWriting closeFile];
+            close(stdoutFd);
+            close(stderrFd);
             exitTsfn.Release();
             throw;
           }
@@ -536,16 +581,15 @@ class NativeDevice : public Napi::ObjectWrap<NativeDevice> {
           if (pid <= 0) {
             // terminationHandler will never fire for a process that never started.
             exitTsfn.Release();
+            close(stdoutFd);
+            close(stderrFd);
           }
           ThrowIfFailed(pid > 0, error);
 
           SpawnResult result;
           result.pid = pid;
-          // dup() so the fd handed to JS outlives these NSFileHandle/NSPipe objects' own ARC
-          // lifetime, which would otherwise close the original fd out from under Node once
-          // nothing in this function references them anymore (verified empirically necessary).
-          result.stdoutFd = dup(stdoutPipe.fileHandleForReading.fileDescriptor);
-          result.stderrFd = dup(stderrPipe.fileHandleForReading.fileDescriptor);
+          result.stdoutFd = stdoutFd;
+          result.stderrFd = stderrFd;
           return result;
         },
         [](Napi::Env env, SpawnResult result) -> Napi::Value {
