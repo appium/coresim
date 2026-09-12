@@ -1,0 +1,36 @@
+name: Integration Tests
+
+on:
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        # Mirrors appium-ios-simulator's functional-test.yml matrix: pairs a real Xcode version
+        # with the oldest macOS runner image known to support it (an arm64 image — see
+        # binding.gyp), covering both ends of the Xcode/CoreSimulator versions this addon's
+        # dynamically-resolved selectors need to keep working across.
+        include:
+        - xcodeVersion: '26.4'
+          platform: macos-26
+        - xcodeVersion: '16.4'
+          platform: macos-15
+    uses: ./.github/workflows/shared.yml
+    with:
+      platform: ${{ matrix.platform }}
+      xcode-version: ${{ matrix.xcodeVersion }}
+      node-version: lts/*
+      test-command: npm run test:integration
+      test-name: Integration tests (Xcode ${{ matrix.xcodeVersion }})
+      # Cheap to run per Xcode version here (no simulator boot involved) and gives warnings-as-
+      # errors coverage across the same Xcode/CoreSimulator versions the functional tests cover.
+      run-xcodebuild-check: true
+      # Real simulator boot/create/delete on a CI runner is far slower than on real hardware
+      # (appium-ios-simulator's own e2e suite budgets up to 16 minutes for a single boot in CI —
+      # see test/functional/helpers.ts's LONG_TIMEOUT) — this only needs to cover ONE boot cycle
+      # per Xcode version since test/integration shares a single device across all its cases (per
+      # available runtime) when CI is set.
+      timeout-minutes: 30
