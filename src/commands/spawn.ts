@@ -119,7 +119,14 @@ export async function spawnProcess(
     });
     proc = new SpawnedProcess(pid, stdoutFd, stderrFd);
     if (pendingExit) {
-      proc._handleExit(...pendingExit);
+      // Delivering this synchronously would emit 'exit' before spawnProcess()'s own promise has
+      // even resolved — a caller doing `const proc = await sim.spawnProcess(...); proc.on('exit', ...)`
+      // would never see it, since its listener can't be attached until after that await returns.
+      // setImmediate defers past both promise-resolution microtasks and any synchronous listener
+      // setup that runs right after them, guaranteeing the listener is attached first.
+      const exitArgs = pendingExit;
+      const deliverTo = proc;
+      setImmediate(() => deliverTo._handleExit(...exitArgs));
     }
     return proc;
   });

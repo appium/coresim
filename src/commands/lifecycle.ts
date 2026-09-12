@@ -131,15 +131,26 @@ export async function waitForBoot(this: NativeSimctl, udid: string, options: {ti
     await waitForCondition(
       async () => {
         const device = await this._findDevice(udid);
-        const state = device.state();
-        if (state !== SimDeviceState.Booting && state !== SimDeviceState.Booted) {
+        const stateBefore = device.state();
+        if (stateBefore !== SimDeviceState.Booting && stateBefore !== SimDeviceState.Booted) {
           // getBootStatus()'s isTerminal is confirmed to never reset on shutdown, so it would
           // still read true from a *previous* boot session here if the device stopped booting
           // partway through this wait (e.g. shut down by another caller) — checking current state
           // too prevents reporting that stale old boot as this wait having succeeded.
-          throw new Error(`Device '${udid}' stopped booting before it finished (state: ${state})`);
+          throw new Error(`Device '${udid}' stopped booting before it finished (state: ${stateBefore})`);
         }
-        return (await device.getBootStatus())?.isTerminal === true;
+        const bootInfo = await device.getBootStatus();
+        // getBootStatus() is itself an async native call — the device can stop booting while it's
+        // in flight, which would otherwise let a stale isTerminal from the check above pass this
+        // predicate. Rechecking afterward, and requiring Booted specifically (not just Booting):
+        // isTerminal only ever turns true once state has already reached Booted (see CLAUDE.md —
+        // SimDeviceState reaches Booted well before boot info settles), so Booting + isTerminal can
+        // only mean a stale status from a previous boot session, never real completion.
+        const stateAfter = device.state();
+        if (stateAfter !== SimDeviceState.Booting && stateAfter !== SimDeviceState.Booted) {
+          throw new Error(`Device '${udid}' stopped booting before it finished (state: ${stateAfter})`);
+        }
+        return stateAfter === SimDeviceState.Booted && bootInfo?.isTerminal === true;
       },
       {
         waitMs: timeoutMs,
