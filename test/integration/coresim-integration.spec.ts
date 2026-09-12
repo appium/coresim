@@ -269,8 +269,11 @@ describe('NativeSimctl integration', () => {
         // its buffered data (observed in CI: stdout was still '' when 'exit' had already fired).
         // Wait for both before asserting on accumulated output.
         const [[code, signal]] = await Promise.all([once(proc, 'exit'), once(proc.stdout, 'end')]);
-        assert.strictEqual(code, 0);
-        assert.strictEqual(signal, null);
+        // A single deepStrictEqual (rather than two separate asserts) so a failure always reports
+        // both values together — exactly one of the two should ever be non-null, and seeing only
+        // the first assertion's failure hides whether the other one is a plain miss or a genuine
+        // signal.
+        assert.deepStrictEqual({code, signal}, {code: 0, signal: null});
         assert.strictEqual(proc.running, false);
         assert.match(stdout, /hello-from-integration-test/);
       });
