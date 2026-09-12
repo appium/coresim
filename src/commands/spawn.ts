@@ -12,9 +12,15 @@ declare module '../native-simctl.js' {
   }
 }
 
-const SIGNAL_NAME_BY_NUMBER: Record<number, NodeJS.Signals> = Object.fromEntries(
-  Object.entries(osConstants.signals).map(([name, num]) => [num, name as NodeJS.Signals]),
-);
+// Some signal numbers have more than one name (e.g. SIGABRT/SIGIOT are both 6) — built with a
+// for-of rather than Object.fromEntries so the *first* name Node lists for a number wins instead
+// of whichever happens to be last, which would otherwise make an aborted process unpredictably
+// report as the obscure historical alias (confirmed: this reversed Object.fromEntries reported a
+// real SIGABRT as 'SIGIOT').
+const SIGNAL_NAME_BY_NUMBER: Record<number, NodeJS.Signals> = {};
+for (const [name, num] of Object.entries(osConstants.signals)) {
+  SIGNAL_NAME_BY_NUMBER[num] ??= name as NodeJS.Signals;
+}
 
 interface SpawnedProcessEvents {
   exit: [code: number | null, signal: NodeJS.Signals | null];
