@@ -16,7 +16,7 @@ npm run format:cpp / lint:cpp    # clang-format / clang-tidy for the native code
 
 npm test                         # unit + integration
 npm run test:unit                # no simulator required
-npm run test:integration         # needs a real simulator; set CI=true to exercise every installed runtime, not just the first
+npm run test:integration         # needs a real simulator
 ```
 
 ## Project structure
@@ -70,10 +70,10 @@ deleted elsewhere surfaces as a normal "not found" error. The public surface int
 streaming `spawnProcess`) that only make sense once you're not just wrapping a CLI.
 
 **Tests and CI**: unit tests cover everything read-only; integration tests cover the mutating device
-lifecycle against real simulators, validated in CI across a matrix of Xcode/CoreSimulator versions
-(a different Xcode ships a different CoreSimulator build) and, within a single run, every installed
-simulator runtime. The native addon build treats compiler warnings as errors on every toolchain
-(`make` and `xcodebuild`).
+lifecycle against one throwaway device on a real simulator, validated in CI across a matrix of
+Xcode/CoreSimulator versions (a different Xcode ships a different CoreSimulator build — the axis
+that actually matters here). The native addon build treats compiler warnings as errors on every
+toolchain (`make` and `xcodebuild`).
 
 ## Things worth knowing before changing native code
 

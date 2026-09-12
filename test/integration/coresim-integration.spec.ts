@@ -11,12 +11,6 @@ import {waitForCondition} from 'asyncbox';
 import {NativeSimctl, SimDeviceState, type SimDeviceInfo} from '../../src/index.js';
 import {getUIKitCatalogPath, UICATALOG_BUNDLE_ID} from '../fixtures.js';
 
-// GitHub Actions sets this for every job; real simulator boot on a CI runner is dramatically
-// slower than on real hardware (appium-ios-simulator's own e2e suite doubles an already-8-minute
-// local boot budget to 16 minutes for CI: test/functional/helpers.ts's LONG_TIMEOUT). On this
-// machine the native async boot path completes in well under a second.
-const IS_CI = Boolean(process.env.CI);
-
 /**
  * `deleteDevice:error:` returns success synchronously but the actual removal (filesystem cleanup)
  * happens on a background queue — empirically confirmed to settle within ~500ms, but polled with
@@ -112,23 +106,20 @@ async function availableRuntimeFixtures(sim: NativeSimctl): Promise<RuntimeFixtu
 // tree synchronously — the per-runtime describe blocks below need the fixture list up front.
 const sim = new NativeSimctl();
 const fixtures = await availableRuntimeFixtures(sim);
-const targets = IS_CI ? fixtures : fixtures.slice(0, 1);
+// Only the first available runtime is exercised — the CI job matrix (integration-test.yml)
+// already varies Xcode/CoreSimulator version across jobs, which is the axis that actually matters
+// for this addon (a different Xcode ships a different bundled CoreSimulator); testing every
+// runtime a single Xcode install happens to have on top of that is redundant and multiplies this
+// suite's already-expensive real-boot cost for no extra coverage.
+const targets = fixtures.slice(0, 1);
 // One throwaway cert shared across every runtime's keychain checks — its content is irrelevant,
 // so there's no reason to mint a fresh one per runtime.
 const certPath = createSelfSignedCert();
 
 /**
- * Mutating coverage against the real CoreSimulator device set, run per simulator runtime — the
- * "simulator version" axis of the matrix the CI job matrix (integration-test.yml, which selects a
- * different Xcode/CoreSimulator version per job via maxim-lobanov/setup-xcode) doesn't cover on
- * its own: a single Xcode install can ship more than one simulator runtime (this dev machine has
- * two). Each runtime gets its own throwaway device, created/booted once and shared by every check
- * against it — never a developer's pre-existing simulators. Read-only checks live under
- * test/unit instead.
- *
- * Locally, only the first available runtime is exercised (fast dev loop, regardless of how many
- * old runtimes happen to accumulate on a real machine over time); in CI, every runtime the job's
- * Xcode has installed is exercised, since that set is small and controlled per runner image.
+ * Mutating coverage against the real CoreSimulator device set, run against one throwaway device
+ * per simulator runtime — created/booted once and shared by every check against it, never a
+ * developer's pre-existing simulators. Read-only checks live under test/unit instead.
  */
 describe('NativeSimctl integration', () => {
   if (targets.length === 0) {
