@@ -4,7 +4,7 @@ import path from 'node:path';
 import {describe, it} from 'node:test';
 import {pathToFileURL} from 'node:url';
 
-import {NativeSimctl, NativeSimUnavailableError, SimDeviceState} from '../../src/index.js';
+import {NativeSimctl, NativeSimError, NativeSimUnavailableError, SimDeviceState} from '../../src/index.js';
 import {getPkgRoot} from '../../src/utils/index.js';
 
 // Built from getPkgRoot() (not a relative "../../" climb from this compiled test file) because
@@ -83,6 +83,16 @@ describe('NativeSimctl (read-only)', {timeout: 30000}, () => {
   it('rejects with a typed, catchable error instead of crashing on an unknown device UDID', async () => {
     const sim = new NativeSimctl();
     await assert.rejects(() => sim.shutdownDevice('00000000-0000-0000-0000-000000000000'), /No simulator device found/);
+  });
+
+  it('rejects grantPermission with a typed error for an unsupported service name', async () => {
+    // Validated before the device is even looked up, so no real device/udid is needed here — this
+    // must still surface as a typed NativeSimError, not a plain Error, since callers rely on that.
+    const sim = new NativeSimctl();
+    await assert.rejects(
+      () => sim.grantPermission('00000000-0000-0000-0000-000000000000', 'location' as never, 'com.example.app'),
+      (err: unknown) => err instanceof NativeSimError,
+    );
   });
 
   it('never throws at construction, even with a bad developer dir', () => {

@@ -101,6 +101,23 @@ bool DeleteAccessRow(sqlite3* db, NSString* service, NSString* bundleId, NSError
       error);
 }
 
+// The delete+insert pair below must not be allowed to commit independently — a failure between
+// them would otherwise permanently drop the prior row instead of leaving it unchanged.
+bool BeginTransaction(sqlite3* db, NSError** error) {
+  if (sqlite3_exec(db, "BEGIN IMMEDIATE TRANSACTION", nullptr, nullptr, nullptr) == SQLITE_OK) {
+    return true;
+  }
+  if (error) {
+    *error = MakeError(sqlite3_errcode(db),
+                       [NSString stringWithFormat:@"Failed to begin TCC database transaction: %s", sqlite3_errmsg(db)]);
+  }
+  return false;
+}
+
+void EndTransaction(sqlite3* db, bool commit) {
+  sqlite3_exec(db, commit ? "COMMIT" : "ROLLBACK", nullptr, nullptr, nullptr);
+}
+
 }  // namespace
 
 BOOL SetTCCAccess(NSString* dataPath, NSString* service, NSString* bundleId, BOOL granted, NSError** error) {
@@ -109,7 +126,10 @@ BOOL SetTCCAccess(NSString* dataPath, NSString* service, NSString* bundleId, BOO
     return NO;
   }
 
-  BOOL success = DeleteAccessRow(db, service, bundleId, error);
+  BOOL success = BeginTransaction(db, error);
+  if (success) {
+    success = DeleteAccessRow(db, service, bundleId, error);
+  }
   if (success) {
     if (HasAuthValueColumn(db)) {
       // `kTCCServicePhotos` rows use auth_version 2 (supports the "limited" library access
@@ -139,6 +159,7 @@ BOOL SetTCCAccess(NSString* dataPath, NSString* service, NSString* bundleId, BOO
     }
   }
 
+  EndTransaction(db, success);
   sqlite3_close(db);
   return success;
 }

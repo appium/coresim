@@ -25,8 +25,10 @@ export async function grantPermission(
   service: SimPermissionService,
   bundleId: string,
 ): Promise<void> {
-  const tccIdentifier = toTCCIdentifier(service);
-  return runCatchingAsync(async () => (await this._findDevice(udid)).grantPermission(tccIdentifier, bundleId));
+  return runCatchingAsync(async () => {
+    const tccIdentifier = toTCCIdentifier(service);
+    return (await this._findDevice(udid)).grantPermission(tccIdentifier, bundleId);
+  });
 }
 
 /**
@@ -42,8 +44,10 @@ export async function revokePermission(
   service: SimPermissionService,
   bundleId: string,
 ): Promise<void> {
-  const tccIdentifier = toTCCIdentifier(service);
-  return runCatchingAsync(async () => (await this._findDevice(udid)).revokePermission(tccIdentifier, bundleId));
+  return runCatchingAsync(async () => {
+    const tccIdentifier = toTCCIdentifier(service);
+    return (await this._findDevice(udid)).revokePermission(tccIdentifier, bundleId);
+  });
 }
 
 /**
@@ -59,8 +63,10 @@ export async function resetPermission(
   service: SimPermissionService,
   bundleId: string,
 ): Promise<void> {
-  const tccIdentifier = toTCCIdentifier(service);
-  return runCatchingAsync(async () => (await this._findDevice(udid)).resetPermission(tccIdentifier, bundleId));
+  return runCatchingAsync(async () => {
+    const tccIdentifier = toTCCIdentifier(service);
+    return (await this._findDevice(udid)).resetPermission(tccIdentifier, bundleId);
+  });
 }
 
 // Maps a friendly service name to the internal TCC service identifier its row in the simulator's

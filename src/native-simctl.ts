@@ -105,13 +105,19 @@ export class NativeSimctl {
    * `defaultDeveloperDir()` ever shells out to `xcode-select`, which doesn't exist off macOS — so
    * the fallback is resolved as an argument to the native call, not eagerly, preserving that
    * evaluation order. Caching the in-flight promise (not just its resolved value) means concurrent
-   * callers before the first resolution still only trigger one `sharedServiceContext` call.
+   * callers before the first resolution still only trigger one `sharedServiceContext` call. On
+   * rejection the cache is cleared again — a Promise is truthy even once rejected, so leaving a
+   * failed one cached would otherwise make every later call reuse that same stale rejection
+   * forever instead of retrying once the underlying condition clears.
    */
   async _serviceContext(): Promise<NativeServiceContextHandle> {
     if (!this.cachedServiceContext) {
       this.cachedServiceContext = runCatchingAsync(() =>
         loadNative().sharedServiceContext(this.developerDir ?? defaultDeveloperDir()),
-      );
+      ).catch((err: unknown) => {
+        this.cachedServiceContext = undefined;
+        throw err;
+      });
     }
     return this.cachedServiceContext;
   }
