@@ -1,6 +1,23 @@
 #include "value_bridge.h"
 
+#include <string>
+
 namespace coresim {
+
+namespace {
+
+// A plain `.c_str()`/`UTF8String` round trip truncates at the first embedded NUL byte, since both
+// treat the buffer as a null-terminated C string — but a JS string (and an NSString) can validly
+// contain U+0000 mid-string. Converting via the actual byte length on both sides preserves it.
+NSString* ToNSString(const std::string& utf8) {
+  return [[NSString alloc] initWithBytes:utf8.data() length:utf8.size() encoding:NSUTF8StringEncoding];
+}
+
+std::string ToStdString(NSString* str) {
+  return std::string(str.UTF8String, [str lengthOfBytesUsingEncoding:NSUTF8StringEncoding]);
+}
+
+}  // namespace
 
 NSObject* JsValueToNSObject(Napi::Env env, Napi::Value value) {
   if (value.IsNull() || value.IsUndefined()) {
@@ -13,7 +30,7 @@ NSObject* JsValueToNSObject(Napi::Env env, Napi::Value value) {
     return @(value.As<Napi::Number>().DoubleValue());
   }
   if (value.IsString()) {
-    return @(value.As<Napi::String>().Utf8Value().c_str());
+    return ToNSString(value.As<Napi::String>().Utf8Value());
   }
   if (value.IsBuffer()) {
     auto buffer = value.As<Napi::Buffer<uint8_t>>();
@@ -33,7 +50,7 @@ NSObject* JsValueToNSObject(Napi::Env env, Napi::Value value) {
     NSMutableDictionary* result = [NSMutableDictionary dictionaryWithCapacity:keys.Length()];
     for (uint32_t i = 0; i < keys.Length(); i++) {
       Napi::Value key = keys.Get(i);
-      NSString* nsKey = @(key.As<Napi::String>().Utf8Value().c_str());
+      NSString* nsKey = ToNSString(key.As<Napi::String>().Utf8Value());
       result[nsKey] = JsValueToNSObject(env, object.Get(key));
     }
     return result;
@@ -46,7 +63,7 @@ Napi::Value NSObjectToJsValue(Napi::Env env, id object) {
     return env.Null();
   }
   if ([object isKindOfClass:[NSString class]]) {
-    return Napi::String::New(env, [(NSString*)object UTF8String]);
+    return Napi::String::New(env, ToStdString((NSString*)object));
   }
   if ([object isKindOfClass:[NSNumber class]]) {
     NSNumber* number = (NSNumber*)object;
@@ -67,21 +84,28 @@ Napi::Value NSObjectToJsValue(Napi::Env env, id object) {
     NSDictionary* dict = (NSDictionary*)object;
     Napi::Object result = Napi::Object::New(env);
     for (NSString* key in dict) {
-      result.Set([key UTF8String], NSObjectToJsValue(env, dict[key]));
+      // Napi::Object::Set's named-property overloads forward to napi_set_named_property, which
+      // (per the underlying N-API C function's own signature) only ever accepts a null-terminated
+      // C string for the key — there's no byte-length variant, so an embedded-NUL key can't go
+      // through that path no matter what we do here. Building the key as a proper Napi::String
+      // first and setting it via the napi_value-keyed overload (napi_set_property) sidesteps that
+      // limitation entirely.
+      Napi::String jsKey = Napi::String::New(env, ToStdString(key));
+      result.Set(jsKey, NSObjectToJsValue(env, dict[key]));
     }
     return result;
   }
   if ([object isKindOfClass:[NSURL class]]) {
-    return Napi::String::New(env, [[(NSURL*)object absoluteString] UTF8String]);
+    return Napi::String::New(env, ToStdString([(NSURL*)object absoluteString]));
   }
   if ([object isKindOfClass:[NSUUID class]]) {
-    return Napi::String::New(env, [[(NSUUID*)object UUIDString] UTF8String]);
+    return Napi::String::New(env, ToStdString([(NSUUID*)object UUIDString]));
   }
   if ([object isKindOfClass:[NSData class]]) {
     NSData* data = (NSData*)object;
     return Napi::Buffer<uint8_t>::Copy(env, static_cast<const uint8_t*>(data.bytes), data.length);
   }
-  return Napi::String::New(env, [[object description] UTF8String]);
+  return Napi::String::New(env, ToStdString([object description]));
 }
 
 }  // namespace coresim

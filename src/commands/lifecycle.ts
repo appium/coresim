@@ -115,6 +115,7 @@ export async function getBootStatus(this: NativeSimctl, udid: string): Promise<S
  * @param options.timeoutMs — how long to wait before giving up (default 4 minutes, matching
  * `simctl bootstatus`'s own default timeout)
  * @throws if the device isn't currently `Booting` or `Booted` — there's nothing to monitor
+ * @throws if the device stops booting (e.g. is shut down) before it finishes
  * @throws if `timeoutMs` elapses before boot settles
  */
 export async function waitForBoot(this: NativeSimctl, udid: string, options: {timeoutMs?: number} = {}): Promise<void> {
@@ -127,11 +128,25 @@ export async function waitForBoot(this: NativeSimctl, udid: string, options: {ti
     // Re-resolves the device handle on every check (never caches it across the wait), matching
     // every other method here — a device deleted mid-wait then surfaces as a normal "not found"
     // error instead of a stale native reference failing in some less obvious way.
-    await waitForCondition(async () => (await (await this._findDevice(udid)).getBootStatus())?.isTerminal === true, {
-      waitMs: timeoutMs,
-      intervalMs: 500,
-      error: `Device '${udid}' did not finish booting within ${timeoutMs}ms`,
-    });
+    await waitForCondition(
+      async () => {
+        const device = await this._findDevice(udid);
+        const state = device.state();
+        if (state !== SimDeviceState.Booting && state !== SimDeviceState.Booted) {
+          // getBootStatus()'s isTerminal is confirmed to never reset on shutdown, so it would
+          // still read true from a *previous* boot session here if the device stopped booting
+          // partway through this wait (e.g. shut down by another caller) — checking current state
+          // too prevents reporting that stale old boot as this wait having succeeded.
+          throw new Error(`Device '${udid}' stopped booting before it finished (state: ${state})`);
+        }
+        return (await device.getBootStatus())?.isTerminal === true;
+      },
+      {
+        waitMs: timeoutMs,
+        intervalMs: 500,
+        error: `Device '${udid}' did not finish booting within ${timeoutMs}ms`,
+      },
+    );
   });
 }
 

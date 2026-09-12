@@ -16,6 +16,8 @@
 #include <unistd.h>
 
 #include <stdexcept>
+#include <string>
+#include <vector>
 
 #include "native/async_bridge.h"
 #include "native/nserror_bridge.h"
@@ -64,6 +66,45 @@ struct SpawnResult {
   int stderrFd = -1;
 };
 
+// Plain data for GetBootStatus/SupportedDeviceTypesMethod/SupportedRuntimesMethod's work lambdas
+// to hand to their toValue callbacks. toValue always runs on the main thread (OnOK), never
+// guarded by Execute()'s try/catch — the node-addon-api completion wrapper only catches
+// Napi::Error there unless NODE_ADDON_API_CPP_EXCEPTIONS_ALL is defined (it isn't here), so a
+// native accessor call from inside toValue could throw NativeSimUnavailableError/ObjCException
+// uncaught and crash the process. Extracting these plain values in `work` instead keeps every
+// native call inside the guarded stage; toValue only ever touches already-safe C++/Foundation
+// primitives.
+struct BootStatusResult {
+  bool hasValue = false;
+  unsigned int status = 0;
+  bool isTerminal = false;
+};
+
+struct DeviceTypeEntry {
+  std::string identifier;
+  std::string name;
+};
+
+struct RuntimeEntry {
+  std::string identifier;
+  std::string name;
+  std::string versionString;
+};
+
+// Node-API explicitly prohibits sharing an Environment's data across Environments (e.g. two
+// worker_threads instances each `require()`-ing this addon) — each gets its own separate call
+// into Init() below. A process-global `static Napi::FunctionReference` per class would let one
+// Environment's object construction use a FunctionReference belonging to another (possibly
+// already-torn-down) Environment, corrupting state or crashing Node. Storing these via
+// Napi::Env::SetInstanceData/GetInstanceData instead keeps each Environment's constructors
+// scoped to it, and cleans them up automatically (the default finalizer just `delete`s this) when
+// that Environment tears down.
+struct AddonInstanceData {
+  Napi::FunctionReference deviceConstructor;
+  Napi::FunctionReference deviceSetConstructor;
+  Napi::FunctionReference serviceContextConstructor;
+};
+
 }  // namespace
 
 class NativeDevice : public Napi::ObjectWrap<NativeDevice> {
@@ -75,8 +116,6 @@ class NativeDevice : public Napi::ObjectWrap<NativeDevice> {
   id device_;
 
  private:
-  static Napi::FunctionReference constructor_;
-
   // Trivial in-memory accessors (no CoreSimulator dispatch that could block) — kept synchronous;
   // used internally by native-simctl.ts's toDeviceInfo(), never a slow operation on their own.
   Napi::Value Udid(const Napi::CallbackInfo& info) {
@@ -143,15 +182,22 @@ class NativeDevice : public Napi::ObjectWrap<NativeDevice> {
   // fully booted" must check `state === Booted` too, not `isTerminal` alone.
   Napi::Value GetBootStatus(const Napi::CallbackInfo& info) {
     id device = device_;
-    return RunAsync<id>(
-        info.Env(), [device]() -> id { return coresim::DeviceBootStatus(device); },
-        [](Napi::Env env, id bootInfo) -> Napi::Value {
+    return RunAsync<BootStatusResult>(
+        info.Env(),
+        [device]() -> BootStatusResult {
+          id bootInfo = coresim::DeviceBootStatus(device);
           if (bootInfo == nil) {
+            return {};
+          }
+          return {true, coresim::BootInfoStatus(bootInfo), static_cast<bool>(coresim::BootInfoIsTerminal(bootInfo))};
+        },
+        [](Napi::Env env, BootStatusResult result) -> Napi::Value {
+          if (!result.hasValue) {
             return env.Null();
           }
           Napi::Object obj = Napi::Object::New(env);
-          obj.Set("status", static_cast<double>(coresim::BootInfoStatus(bootInfo)));
-          obj.Set("isTerminal", static_cast<bool>(coresim::BootInfoIsTerminal(bootInfo)));
+          obj.Set("status", static_cast<double>(result.status));
+          obj.Set("isTerminal", result.isTerminal);
           return obj;
         });
   }
@@ -512,8 +558,6 @@ class NativeDevice : public Napi::ObjectWrap<NativeDevice> {
   }
 };
 
-Napi::FunctionReference NativeDevice::constructor_;
-
 NativeDevice::NativeDevice(const Napi::CallbackInfo& info) : Napi::ObjectWrap<NativeDevice>(info) {
   device_ = UnwrapExternalId(info);
 }
@@ -557,11 +601,12 @@ void NativeDevice::Init(Napi::Env env) {
                       InstanceMethod<&NativeDevice::PostDarwinNotification>("postDarwinNotification"),
                       InstanceMethod<&NativeDevice::Spawn>("spawn"),
                   });
-  constructor_ = Napi::Persistent(ctor);
-  constructor_.SuppressDestruct();
+  env.GetInstanceData<AddonInstanceData>()->deviceConstructor = Napi::Persistent(ctor);
 }
 
-Napi::Object NativeDevice::NewInstance(Napi::Env env, id device) { return WrapExternalId(env, constructor_, device); }
+Napi::Object NativeDevice::NewInstance(Napi::Env env, id device) {
+  return WrapExternalId(env, env.GetInstanceData<AddonInstanceData>()->deviceConstructor, device);
+}
 
 class NativeDeviceSet : public Napi::ObjectWrap<NativeDeviceSet> {
  public:
@@ -570,7 +615,6 @@ class NativeDeviceSet : public Napi::ObjectWrap<NativeDeviceSet> {
   explicit NativeDeviceSet(const Napi::CallbackInfo& info);
 
  private:
-  static Napi::FunctionReference constructor_;
   id deviceSet_;
   id serviceContext_;
 
@@ -624,8 +668,6 @@ class NativeDeviceSet : public Napi::ObjectWrap<NativeDeviceSet> {
   }
 };
 
-Napi::FunctionReference NativeDeviceSet::constructor_;
-
 NativeDeviceSet::NativeDeviceSet(const Napi::CallbackInfo& info) : Napi::ObjectWrap<NativeDeviceSet>(info) {
   deviceSet_ = UnwrapExternalId(info);
   serviceContext_ = *static_cast<__unsafe_unretained id*>(info[1].As<Napi::External<void>>().Data());
@@ -638,14 +680,13 @@ void NativeDeviceSet::Init(Napi::Env env) {
                                         InstanceMethod<&NativeDeviceSet::CreateDeviceMethod>("createDevice"),
                                         InstanceMethod<&NativeDeviceSet::DeleteDeviceMethod>("deleteDevice"),
                                     });
-  constructor_ = Napi::Persistent(ctor);
-  constructor_.SuppressDestruct();
+  env.GetInstanceData<AddonInstanceData>()->deviceSetConstructor = Napi::Persistent(ctor);
 }
 
 Napi::Object NativeDeviceSet::NewInstance(Napi::Env env, id deviceSet, id serviceContext) {
   __unsafe_unretained id boxedDeviceSet = deviceSet;
   __unsafe_unretained id boxedServiceContext = serviceContext;
-  return constructor_.New(
+  return env.GetInstanceData<AddonInstanceData>()->deviceSetConstructor.New(
       {Napi::External<void>::New(env, &boxedDeviceSet), Napi::External<void>::New(env, &boxedServiceContext)});
 }
 
@@ -656,7 +697,6 @@ class NativeServiceContext : public Napi::ObjectWrap<NativeServiceContext> {
   explicit NativeServiceContext(const Napi::CallbackInfo& info);
 
  private:
-  static Napi::FunctionReference constructor_;
   id serviceContext_;
 
   Napi::Value DefaultDeviceSetMethod(const Napi::CallbackInfo& info) {
@@ -676,14 +716,23 @@ class NativeServiceContext : public Napi::ObjectWrap<NativeServiceContext> {
 
   Napi::Value SupportedDeviceTypesMethod(const Napi::CallbackInfo& info) {
     id serviceContext = serviceContext_;
-    return RunAsync<NSArray*>(
-        info.Env(), [serviceContext]() -> NSArray* { return coresim::SupportedDeviceTypes(serviceContext); },
-        [](Napi::Env env, NSArray* types) -> Napi::Value {
-          Napi::Array result = Napi::Array::New(env, types.count);
+    return RunAsync<std::vector<DeviceTypeEntry>>(
+        info.Env(),
+        [serviceContext]() -> std::vector<DeviceTypeEntry> {
+          NSArray* types = coresim::SupportedDeviceTypes(serviceContext);
+          std::vector<DeviceTypeEntry> result;
+          result.reserve(types.count);
           for (NSUInteger i = 0; i < types.count; i++) {
+            result.push_back({DeviceTypeIdentifier(types[i]).UTF8String, DeviceTypeName(types[i]).UTF8String});
+          }
+          return result;
+        },
+        [](Napi::Env env, std::vector<DeviceTypeEntry> types) -> Napi::Value {
+          Napi::Array result = Napi::Array::New(env, types.size());
+          for (size_t i = 0; i < types.size(); i++) {
             Napi::Object entry = Napi::Object::New(env);
-            entry.Set("identifier", DeviceTypeIdentifier(types[i]).UTF8String);
-            entry.Set("name", DeviceTypeName(types[i]).UTF8String);
+            entry.Set("identifier", types[i].identifier);
+            entry.Set("name", types[i].name);
             result[static_cast<uint32_t>(i)] = entry;
           }
           return result;
@@ -692,23 +741,31 @@ class NativeServiceContext : public Napi::ObjectWrap<NativeServiceContext> {
 
   Napi::Value SupportedRuntimesMethod(const Napi::CallbackInfo& info) {
     id serviceContext = serviceContext_;
-    return RunAsync<NSArray*>(
-        info.Env(), [serviceContext]() -> NSArray* { return coresim::SupportedRuntimes(serviceContext); },
-        [](Napi::Env env, NSArray* runtimes) -> Napi::Value {
-          Napi::Array result = Napi::Array::New(env, runtimes.count);
+    return RunAsync<std::vector<RuntimeEntry>>(
+        info.Env(),
+        [serviceContext]() -> std::vector<RuntimeEntry> {
+          NSArray* runtimes = coresim::SupportedRuntimes(serviceContext);
+          std::vector<RuntimeEntry> result;
+          result.reserve(runtimes.count);
           for (NSUInteger i = 0; i < runtimes.count; i++) {
+            result.push_back({RuntimeIdentifier(runtimes[i]).UTF8String, RuntimeName(runtimes[i]).UTF8String,
+                              RuntimeVersionString(runtimes[i]).UTF8String});
+          }
+          return result;
+        },
+        [](Napi::Env env, std::vector<RuntimeEntry> runtimes) -> Napi::Value {
+          Napi::Array result = Napi::Array::New(env, runtimes.size());
+          for (size_t i = 0; i < runtimes.size(); i++) {
             Napi::Object entry = Napi::Object::New(env);
-            entry.Set("identifier", RuntimeIdentifier(runtimes[i]).UTF8String);
-            entry.Set("name", RuntimeName(runtimes[i]).UTF8String);
-            entry.Set("versionString", RuntimeVersionString(runtimes[i]).UTF8String);
+            entry.Set("identifier", runtimes[i].identifier);
+            entry.Set("name", runtimes[i].name);
+            entry.Set("versionString", runtimes[i].versionString);
             result[static_cast<uint32_t>(i)] = entry;
           }
           return result;
         });
   }
 };
-
-Napi::FunctionReference NativeServiceContext::constructor_;
 
 NativeServiceContext::NativeServiceContext(const Napi::CallbackInfo& info)
     : Napi::ObjectWrap<NativeServiceContext>(info) {
@@ -723,12 +780,11 @@ void NativeServiceContext::Init(Napi::Env env) {
                       InstanceMethod<&NativeServiceContext::SupportedDeviceTypesMethod>("supportedDeviceTypes"),
                       InstanceMethod<&NativeServiceContext::SupportedRuntimesMethod>("supportedRuntimes"),
                   });
-  constructor_ = Napi::Persistent(ctor);
-  constructor_.SuppressDestruct();
+  env.GetInstanceData<AddonInstanceData>()->serviceContextConstructor = Napi::Persistent(ctor);
 }
 
 Napi::Object NativeServiceContext::NewInstance(Napi::Env env, id serviceContext) {
-  return WrapExternalId(env, constructor_, serviceContext);
+  return WrapExternalId(env, env.GetInstanceData<AddonInstanceData>()->serviceContextConstructor, serviceContext);
 }
 
 Napi::Value SharedServiceContextBinding(const Napi::CallbackInfo& info) {
@@ -752,6 +808,9 @@ Napi::Value FrameworkVersionBinding(const Napi::CallbackInfo& info) {
 }
 
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
+  // Runs once per Environment (see AddonInstanceData above) — never shared across a
+  // worker_threads instance also `require()`-ing this addon.
+  env.SetInstanceData(new AddonInstanceData());
   NativeDevice::Init(env);
   NativeDeviceSet::Init(env);
   NativeServiceContext::Init(env);

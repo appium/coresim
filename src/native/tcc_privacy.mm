@@ -114,8 +114,24 @@ bool BeginTransaction(sqlite3* db, NSError** error) {
   return false;
 }
 
-void EndTransaction(sqlite3* db, bool commit) {
-  sqlite3_exec(db, commit ? "COMMIT" : "ROLLBACK", nullptr, nullptr, nullptr);
+// Returns whether the transaction actually ended up committed. On a COMMIT failure (e.g.
+// SQLITE_BUSY from a concurrent reader — SQLite documents that a busy COMMIT leaves the
+// transaction still active, not rolled back automatically) the transaction is explicitly rolled
+// back here rather than left for sqlite3_close to implicitly discard, so the caller gets an
+// accurate failure instead of the `true` that the statements before COMMIT itself had reported.
+bool CommitOrRollback(sqlite3* db, bool commit, NSError** error) {
+  if (commit) {
+    if (sqlite3_exec(db, "COMMIT", nullptr, nullptr, nullptr) == SQLITE_OK) {
+      return true;
+    }
+    if (error) {
+      *error =
+          MakeError(sqlite3_errcode(db),
+                    [NSString stringWithFormat:@"Failed to commit TCC database transaction: %s", sqlite3_errmsg(db)]);
+    }
+  }
+  sqlite3_exec(db, "ROLLBACK", nullptr, nullptr, nullptr);
+  return false;
 }
 
 }  // namespace
@@ -159,7 +175,7 @@ BOOL SetTCCAccess(NSString* dataPath, NSString* service, NSString* bundleId, BOO
     }
   }
 
-  EndTransaction(db, success);
+  success = CommitOrRollback(db, success, error);
   sqlite3_close(db);
   return success;
 }

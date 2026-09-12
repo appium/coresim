@@ -164,8 +164,10 @@ export interface PushNotificationPayload {
 
 /**
  * What `NativeDeviceHandle.spawn()` resolves with once the process has started — `stdoutFd`/
- * `stderrFd` are raw, already-`dup()`'d file descriptors (see coresim.mm) ready for
- * `fs.createReadStream({fd})`; `pid` is a real host OS process id, killable directly.
+ * `stderrFd` are raw, already-`dup()`'d file descriptors (see coresim.mm) ready to be wrapped in a
+ * `net.Socket({fd, readable: true, writable: false})` (not `fs.createReadStream`, which would
+ * block a shared libuv threadpool worker for as long as the pipe stays quiet — see
+ * commands/spawn.ts); `pid` is a real host OS process id, killable directly.
  */
 export interface NativeSpawnResult {
   pid: number;

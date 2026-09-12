@@ -43,16 +43,24 @@ class ValueAsyncWorker : public Napi::AsyncWorker {
   Napi::Promise GetPromise() { return deferred_.Promise(); }
 
   void Execute() override {
-    try {
-      result_ = work_();
-    } catch (const NativeSimUnavailableError& error) {
-      unavailable_ = std::make_unique<NativeSimUnavailableError>(error);
-    } catch (const NSErrorException& error) {
-      nsError_ = std::make_unique<NSErrorException>(error);
-    } catch (const ObjCException& error) {
-      objcException_ = std::make_unique<ObjCException>(error);
-    } catch (const std::exception& error) {
-      SetError(error.what());
+    // libuv threadpool threads are persistent and reused across many Execute() calls, with no
+    // implicit per-iteration autorelease pool the way the main thread gets from a run loop —
+    // without one here, every autoreleased Foundation temporary `work_`/its callees produce (e.g.
+    // -stringWithFormat:, -pipe) would sit until the thread itself exits, growing without bound.
+    // `result_`/the caught exceptions below are real (retained) members, not autoreleased
+    // temporaries, so assigning into them before the pool drains keeps them alive regardless.
+    @autoreleasepool {
+      try {
+        result_ = work_();
+      } catch (const NativeSimUnavailableError& error) {
+        unavailable_ = std::make_unique<NativeSimUnavailableError>(error);
+      } catch (const NSErrorException& error) {
+        nsError_ = std::make_unique<NSErrorException>(error);
+      } catch (const ObjCException& error) {
+        objcException_ = std::make_unique<ObjCException>(error);
+      } catch (const std::exception& error) {
+        SetError(error.what());
+      }
     }
   }
 
@@ -94,16 +102,20 @@ class VoidAsyncWorker : public Napi::AsyncWorker {
   Napi::Promise GetPromise() { return deferred_.Promise(); }
 
   void Execute() override {
-    try {
-      work_();
-    } catch (const NativeSimUnavailableError& error) {
-      unavailable_ = std::make_unique<NativeSimUnavailableError>(error);
-    } catch (const NSErrorException& error) {
-      nsError_ = std::make_unique<NSErrorException>(error);
-    } catch (const ObjCException& error) {
-      objcException_ = std::make_unique<ObjCException>(error);
-    } catch (const std::exception& error) {
-      SetError(error.what());
+    // See ValueAsyncWorker::Execute() above for why this pool is needed on a reused threadpool
+    // thread.
+    @autoreleasepool {
+      try {
+        work_();
+      } catch (const NativeSimUnavailableError& error) {
+        unavailable_ = std::make_unique<NativeSimUnavailableError>(error);
+      } catch (const NSErrorException& error) {
+        nsError_ = std::make_unique<NSErrorException>(error);
+      } catch (const ObjCException& error) {
+        objcException_ = std::make_unique<ObjCException>(error);
+      } catch (const std::exception& error) {
+        SetError(error.what());
+      }
     }
   }
 

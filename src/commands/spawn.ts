@@ -1,5 +1,5 @@
 import {EventEmitter} from 'node:events';
-import {createReadStream, type ReadStream} from 'node:fs';
+import {Socket} from 'node:net';
 import {constants as osConstants} from 'node:os';
 
 import type {NativeSimctl} from '../native-simctl.js';
@@ -34,8 +34,8 @@ interface SpawnedProcessEvents {
  * `child_process.ChildProcess`'s own semantics (exactly one of the two is non-null).
  */
 export class SpawnedProcess extends EventEmitter<SpawnedProcessEvents> {
-  readonly stdout: ReadStream;
-  readonly stderr: ReadStream;
+  readonly stdout: Socket;
+  readonly stderr: Socket;
   exitCode: number | null = null;
   signalCode: NodeJS.Signals | null = null;
 
@@ -45,8 +45,18 @@ export class SpawnedProcess extends EventEmitter<SpawnedProcessEvents> {
     stderrFd: number,
   ) {
     super();
-    this.stdout = createReadStream('', {fd: stdoutFd});
-    this.stderr = createReadStream('', {fd: stderrFd});
+    // `net.Socket` (not `fs.createReadStream`) deliberately: these fds are blocking NSPipe read
+    // ends, and fs's reads always run as blocking syscalls on the shared libuv threadpool (default
+    // size 4) regardless of the fd's actual type — a single quiet process's idle stdout+stderr
+    // reads permanently occupy 2 of those 4 workers until output or EOF arrives, and two quiet
+    // processes exhaust the pool entirely, stalling unrelated fs work *and* this addon's own
+    // AsyncWorkers (confirmed empirically: an unrelated fs.readFile took 8+ seconds instead of
+    // ~1ms while two quiet spawned processes' output was being read this way). A pipe fd is
+    // recognized by libuv as a named-pipe handle regardless of whether it's an anonymous pipe(2),
+    // so wrapping it in a Socket gets real event-driven (kqueue/epoll) I/O instead, exactly like
+    // Node's own child_process does for a child's stdio pipes.
+    this.stdout = new Socket({fd: stdoutFd, readable: true, writable: false});
+    this.stderr = new Socket({fd: stderrFd, readable: true, writable: false});
   }
 
   /** Whether the process has neither exited nor been killed yet. */
@@ -54,8 +64,16 @@ export class SpawnedProcess extends EventEmitter<SpawnedProcessEvents> {
     return this.exitCode === null && this.signalCode === null;
   }
 
-  /** Sends a signal to the process — a thin wrapper over `process.kill()`. */
+  /**
+   * Sends a signal to the process — a thin wrapper over `process.kill()`. A no-op returning
+   * `false` once exit has already been observed, rather than risking `process.kill()` throwing
+   * `ESRCH` on an already-reaped pid or, worse, hitting an unrelated process if the pid has since
+   * been recycled by the OS.
+   */
   kill(signal: NodeJS.Signals | number = 'SIGTERM'): boolean {
+    if (!this.running) {
+      return false;
+    }
     return process.kill(this.pid, signal);
   }
 
@@ -84,14 +102,25 @@ export async function spawnProcess(
 ): Promise<SpawnedProcess> {
   return runCatchingAsync(async () => {
     const device = await this._findDevice(udid);
-    // The native termination callback can only ever fire once the process has actually started
-    // and later exits — strictly after `device.spawn()`'s own promise (which carries the pid)
-    // has already resolved below — so `proc` is always assigned by the time this runs.
-    let proc: SpawnedProcess;
-    const {pid, stdoutFd, stderrFd} = await device.spawn(path, options, (code, signal) =>
-      proc._handleExit(code, signal),
-    );
+    // The native termination callback (delivered via a ThreadSafeFunction/GCD path) and
+    // device.spawn()'s own promise resolution (an AsyncWorker completion) are independent async
+    // signals with no guaranteed relative order — a process that exits almost immediately can have
+    // its termination callback fire before the promise below resolves and `proc` exists. Buffer the
+    // exit args in that case and deliver them once the handle is constructed, rather than assuming
+    // the callback always arrives second.
+    let proc: SpawnedProcess | undefined;
+    let pendingExit: [code: number | null, signal: number | null] | undefined;
+    const {pid, stdoutFd, stderrFd} = await device.spawn(path, options, (code, signal) => {
+      if (proc) {
+        proc._handleExit(code, signal);
+      } else {
+        pendingExit = [code, signal];
+      }
+    });
     proc = new SpawnedProcess(pid, stdoutFd, stderrFd);
+    if (pendingExit) {
+      proc._handleExit(...pendingExit);
+    }
     return proc;
   });
 }
