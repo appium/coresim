@@ -233,6 +233,7 @@ export interface NativeDeviceHandle {
   addVideo(filePath: string): Promise<void>;
   getPasteboard(): Promise<string>;
   setPasteboard(content: string): Promise<void>;
+  screenshot(): Promise<Buffer>;
   spawn(path: string, options: SpawnOptions | undefined, onExit: NativeSpawnExitCallback): Promise<NativeSpawnResult>;
 }
 

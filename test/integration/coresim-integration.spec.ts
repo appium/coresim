@@ -310,6 +310,20 @@ describe('NativeSimctl integration', () => {
         assert.strictEqual(await sim.getPasteboard(device!.udid), 'coresim-pasteboard-test');
       });
 
+      it('captures a PNG screenshot of the booted device', async (t) => {
+        let png: Buffer;
+        try {
+          png = await sim.getScreenshot(device!.udid);
+        } catch (err) {
+          if (err instanceof NativeSimUnavailableError) {
+            return t.skip(`screenshot capture unavailable on this CoreSimulator: ${err.message}`);
+          }
+          throw err;
+        }
+        assert.ok(png.length > 0);
+        assert.deepStrictEqual(png.subarray(0, 8), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+      });
+
       if (isIOSRuntime(fixture.runtimeIdentifier)) {
         it('opens a URL', async () => {
           await sim.openUrl(device!.udid, 'https://appium.io');
