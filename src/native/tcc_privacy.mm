@@ -190,4 +190,67 @@ BOOL ResetTCCAccess(NSString* dataPath, NSString* service, NSString* bundleId, N
   return success;
 }
 
+BOOL GetTCCAccess(NSString* dataPath, NSString* service, NSString* bundleId, TCCAuthStatus* outStatus,
+                  NSError** error) {
+  sqlite3* db = OpenDatabase(dataPath, error);
+  if (!db) {
+    return NO;
+  }
+
+  bool hasAuthValue = HasAuthValueColumn(db);
+  const char* sql = hasAuthValue ? "SELECT auth_value FROM access WHERE service = ? AND client = ? AND client_type = 0"
+                                 : "SELECT allowed FROM access WHERE service = ? AND client = ? AND client_type = 0";
+  sqlite3_stmt* stmt = nullptr;
+  if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+    if (error) {
+      *error =
+          MakeError(sqlite3_errcode(db),
+                    [NSString stringWithFormat:@"Failed to prepare TCC database statement: %s", sqlite3_errmsg(db)]);
+    }
+    sqlite3_close(db);
+    return NO;
+  }
+  BindText(stmt, 1, service);
+  BindText(stmt, 2, bundleId);
+
+  BOOL success = YES;
+  TCCAuthStatus status = kTCCAuthNotDetermined;
+  int rc = sqlite3_step(stmt);
+  if (rc == SQLITE_ROW) {
+    int raw = sqlite3_column_int(stmt, 0);
+    if (hasAuthValue) {
+      // 0/2/3 per the schema comment in SetTCCAccess above; any other raw value (a reserved/future
+      // one this addon doesn't know about) is reported as not-determined rather than guessed at.
+      switch (raw) {
+        case 0:
+          status = kTCCAuthDenied;
+          break;
+        case 2:
+          status = kTCCAuthGranted;
+          break;
+        case 3:
+          status = kTCCAuthLimited;
+          break;
+        default:
+          status = kTCCAuthNotDetermined;
+          break;
+      }
+    } else {
+      status = raw ? kTCCAuthGranted : kTCCAuthDenied;
+    }
+  } else if (rc != SQLITE_DONE) {
+    success = NO;
+    if (error) {
+      *error = MakeError(rc, [NSString stringWithFormat:@"Failed to read TCC database: %s", sqlite3_errmsg(db)]);
+    }
+  }
+  sqlite3_finalize(stmt);
+  sqlite3_close(db);
+
+  if (success && outStatus) {
+    *outStatus = status;
+  }
+  return success;
+}
+
 }  // namespace coresim

@@ -1,5 +1,5 @@
 import type {NativeSimctl} from '../native-simctl.js';
-import type {SimPermissionService} from '../types.js';
+import type {SimPermissionService, SimPermissionStatus} from '../types.js';
 import {runCatchingAsync} from '../utils/index.js';
 
 declare module '../native-simctl.js' {
@@ -7,6 +7,7 @@ declare module '../native-simctl.js' {
     grantPermission(udid: string, service: SimPermissionService, bundleId: string): Promise<void>;
     revokePermission(udid: string, service: SimPermissionService, bundleId: string): Promise<void>;
     resetPermission(udid: string, service: SimPermissionService, bundleId: string): Promise<void>;
+    getPermission(udid: string, service: SimPermissionService, bundleId: string): Promise<SimPermissionStatus>;
   }
 }
 
@@ -66,6 +67,28 @@ export async function resetPermission(
   return runCatchingAsync(async () => {
     const tccIdentifier = toTCCIdentifier(service);
     return (await this._findDevice(udid)).resetPermission(tccIdentifier, bundleId);
+  });
+}
+
+/**
+ * Reads a privacy permission's current status directly from the simulator's own TCC database —
+ * there's no CoreSimulator getter for this, only the setters {@link grantPermission}/
+ * {@link revokePermission}/{@link resetPermission} write to (see CLAUDE.md).
+ *
+ * @param udid — UDID of the device to read from
+ * @param service — permission to check (see {@link grantPermission})
+ * @param bundleId — bundle identifier of the app the permission applies to
+ * @returns `'unset'` if the app has never been prompted/decided for this permission
+ */
+export async function getPermission(
+  this: NativeSimctl,
+  udid: string,
+  service: SimPermissionService,
+  bundleId: string,
+): Promise<SimPermissionStatus> {
+  return runCatchingAsync(async () => {
+    const tccIdentifier = toTCCIdentifier(service);
+    return (await this._findDevice(udid)).getPermission(tccIdentifier, bundleId);
   });
 }
 

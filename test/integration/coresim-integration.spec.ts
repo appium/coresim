@@ -20,6 +20,12 @@ const IS_CI = Boolean(process.env.CI);
 const SKIP_UNSTABLE_IN_CI = IS_CI
   ? 'unstable in CI: spawned processes have intermittently been observed aborting immediately on hosted runners'
   : false;
+// This suite otherwise shares a single boot cycle per Xcode version (see integration-test.yml) —
+// shutdownAllDevices() needs its own second throwaway device booted/deleted just to exercise it,
+// which would materially add to CI's already-expensive real-boot cost for one extra assertion.
+const SKIP_EXPENSIVE_IN_CI = IS_CI
+  ? 'too expensive for CI: requires booting a second throwaway device beyond this suite’s shared one'
+  : false;
 
 /**
  * `deleteDevice:error:` returns success synchronously but the actual removal (filesystem cleanup)
@@ -58,6 +64,42 @@ function createSelfSignedCert(): string {
 /** iOS-only checks (app install, openUrl) need a real browser/app-install surface tvOS/watchOS/visionOS don't have. */
 function isIOSRuntime(runtimeIdentifier: string): boolean {
   return runtimeIdentifier.includes('.SimRuntime.iOS-');
+}
+
+// The smallest possible valid PNG (a single black pixel) — good enough for addMedia/addPhoto,
+// which only need a file CoreSimulator's own type-sniffing recognizes as an image.
+const ONE_PIXEL_PNG_BASE64 =
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
+
+function createTestPhoto(): string {
+  const photoPath = path.join(os.tmpdir(), `coresim-test-photo-${Date.now()}-${process.pid}.png`);
+  fs.writeFileSync(photoPath, Buffer.from(ONE_PIXEL_PNG_BASE64, 'base64'));
+  return photoPath;
+}
+
+const HAS_FFMPEG = (() => {
+  try {
+    execFileSync('ffmpeg', ['-version'], {stdio: 'ignore'});
+    return true;
+  } catch {
+    return false;
+  }
+})();
+
+/** A trivial 1-frame video, via ffmpeg — skipped in whatever environment doesn't have it installed. */
+function createTestVideo(): string {
+  const videoPath = path.join(os.tmpdir(), `coresim-test-video-${Date.now()}-${process.pid}.mp4`);
+  execFileSync('ffmpeg', [
+    '-y',
+    '-f',
+    'lavfi',
+    '-i',
+    'color=c=black:s=32x32:d=0.1',
+    '-frames:v',
+    '1',
+    videoPath,
+  ]);
+  return videoPath;
 }
 
 /**
@@ -257,6 +299,41 @@ describe('NativeSimctl integration', () => {
         assert.strictEqual(readTCCGranted(device!.udid, 'kTCCServiceCamera', bundleId), undefined);
       });
 
+      it('reads a privacy permission status through the same grant/revoke/reset lifecycle', async () => {
+        const bundleId = 'com.appium.coresim.doesnotexist';
+
+        assert.strictEqual(await sim.getPermission(device!.udid, 'contacts', bundleId), 'unset');
+
+        await sim.grantPermission(device!.udid, 'contacts', bundleId);
+        assert.strictEqual(await sim.getPermission(device!.udid, 'contacts', bundleId), 'granted');
+
+        await sim.revokePermission(device!.udid, 'contacts', bundleId);
+        assert.strictEqual(await sim.getPermission(device!.udid, 'contacts', bundleId), 'denied');
+
+        await sim.resetPermission(device!.udid, 'contacts', bundleId);
+        assert.strictEqual(await sim.getPermission(device!.udid, 'contacts', bundleId), 'unset');
+      });
+
+      it('adds media to the Photos library', async () => {
+        const photoPath = createTestPhoto();
+        try {
+          await sim.addPhoto(device!.udid, photoPath);
+          await sim.addMedia(device!.udid, [photoPath]);
+        } finally {
+          await fs.promises.rm(photoPath, {force: true});
+        }
+
+        if (!HAS_FFMPEG) {
+          return;
+        }
+        const videoPath = createTestVideo();
+        try {
+          await sim.addVideo(device!.udid, videoPath);
+        } finally {
+          await fs.promises.rm(videoPath, {force: true});
+        }
+      });
+
       if (isIOSRuntime(fixture.runtimeIdentifier)) {
         it('opens a URL', async () => {
           await sim.openUrl(device!.udid, 'https://appium.io');
@@ -351,6 +428,31 @@ describe('NativeSimctl integration', () => {
           (await sim.getDevices()).find((d) => d.udid === device!.udid)?.state,
           SimDeviceState.Shutdown,
         );
+      });
+
+      // Also last (after the shared `device` above is already Shutdown, so this can't disturb any
+      // other test in this file): shutdownAllDevices() operates on the *entire* default device
+      // set, not just devices this suite created, so it's exercised here against its own dedicated
+      // throwaway device. It would still shut down any other simulator a developer happens to have
+      // booted locally at the same time — an inherent, documented characteristic of the native
+      // operation being tested (see lifecycle.ts), not a test bug.
+      it('shuts down every booted device in the default set', {skip: SKIP_EXPENSIVE_IN_CI}, async () => {
+        const extra = await sim.createDevice(
+          `coresim-test-shutdownall-${Date.now()}`,
+          fixture.deviceTypeIdentifier,
+          fixture.runtimeIdentifier,
+        );
+        try {
+          await sim.bootDevice(extra.udid);
+          await sim.waitForBoot(extra.udid);
+          await sim.shutdownAllDevices();
+          assert.strictEqual(
+            (await sim.getDevices()).find((d) => d.udid === extra.udid)?.state,
+            SimDeviceState.Shutdown,
+          );
+        } finally {
+          await sim.deleteDevice(extra.udid);
+        }
       });
     });
   }

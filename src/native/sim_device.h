@@ -122,4 +122,13 @@ BOOL PostDarwinNotification(id device, NSString* name, NSError** error);
 int Spawn(id device, NSString* path, NSDictionary* options, dispatch_queue_t terminationQueue,
           void (^terminationHandler)(int), NSError** error);
 
+// -[SimDevice addMedia:error:] — takes an array of file URLs (photos/videos), auto-detected by
+// type; this is what `simctl addmedia`'s multi-path form calls into.
+BOOL AddMedia(id device, NSArray<NSURL*>* fileURLs, NSError** error);
+
+// -[SimDevice addPhoto:error:] / -[SimDevice addVideo:error:] — single-file convenience variants
+// alongside AddMedia, for a caller that already knows which kind it's adding.
+BOOL AddPhoto(id device, NSURL* fileURL, NSError** error);
+BOOL AddVideo(id device, NSURL* fileURL, NSError** error);
+
 }  // namespace coresim

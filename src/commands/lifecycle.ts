@@ -18,6 +18,7 @@ declare module '../native-simctl.js' {
     getBootStatus(udid: string): Promise<SimBootInfo | null>;
     waitForBoot(udid: string, options?: {timeoutMs?: number}): Promise<void>;
     shutdownDevice(udid: string): Promise<void>;
+    shutdownAllDevices(): Promise<void>;
     eraseDevice(udid: string): Promise<void>;
   }
 }
@@ -167,6 +168,34 @@ export async function waitForBoot(this: NativeSimctl, udid: string, options: {ti
  */
 export async function shutdownDevice(this: NativeSimctl, udid: string): Promise<void> {
   return runCatchingAsync(async () => (await this._findDevice(udid)).shutdown());
+}
+
+/**
+ * Best-effort shutdown of every device in the default device set that isn't already `Shutdown` —
+ * the native equivalent of `xcrun simctl shutdown all`.
+ *
+ * Deliberately implemented as a fan-out over the already-verified per-device {@link shutdownDevice}
+ * path rather than `SimDeviceSet`'s own bulk
+ * `shutdownBootedDevicesMatchingVolumeURL:completionGroup:deviceShutdownHandler:` method: that
+ * method takes a raw GCD completion block whose exact parameter signature couldn't be confirmed
+ * from the framework's runtime metadata alone (unlike every other native call in this addon — see
+ * CLAUDE.md on wrong-shaped native arguments crashing the whole process, not just the call), and
+ * guessing at a block's arity is a real crash risk in a way a plain object/BOOL/NSError argument
+ * mismatch isn't (safe_dispatch's `@try`/`@catch` doesn't guard against it). Individual shutdown
+ * failures are swallowed here (e.g. a device that reached `Shutdown` between the state check and
+ * the call) rather than failing the whole batch, matching `simctl shutdown all`'s own best-effort
+ * behavior.
+ */
+export async function shutdownAllDevices(this: NativeSimctl): Promise<void> {
+  return runCatchingAsync(async () => {
+    const deviceSet = await this._deviceSet();
+    const devices = await deviceSet.devices();
+    await Promise.all(
+      devices
+        .filter((device) => device.state() !== SimDeviceState.Shutdown)
+        .map((device) => device.shutdown().catch(() => {})),
+    );
+  });
 }
 
 /**

@@ -75,6 +75,15 @@ export interface SimBootInfo {
  * `location` isn't included since CoreLocation simulation has its own subsystem, not a plain TCC
  * row (see CLAUDE.md).
  */
+/**
+ * Result of `NativeSimctl.getPermission` — mirrors the TCC database's own auth states rather than
+ * a plain boolean, since `'unset'` (never prompted/decided) and `'denied'` (explicitly refused)
+ * are different states with different UI implications. `'limited'` only applies to `photos`
+ * ("selected photos" access) and is never produced by `grantPermission` itself, but can already be
+ * present if something else set it.
+ */
+export type SimPermissionStatus = 'unset' | 'denied' | 'granted' | 'limited';
+
 export type SimPermissionService =
   | 'calendar'
   | 'camera'
@@ -215,9 +224,13 @@ export interface NativeDeviceHandle {
   grantPermission(service: string, bundleId: string): Promise<void>;
   revokePermission(service: string, bundleId: string): Promise<void>;
   resetPermission(service: string, bundleId: string): Promise<void>;
+  getPermission(service: string, bundleId: string): Promise<SimPermissionStatus>;
   darwinNotificationGetState(name: string): Promise<bigint>;
   darwinNotificationSetState(name: string, state: bigint): Promise<void>;
   postDarwinNotification(name: string): Promise<void>;
+  addMedia(filePaths: string[]): Promise<void>;
+  addPhoto(filePath: string): Promise<void>;
+  addVideo(filePath: string): Promise<void>;
   spawn(path: string, options: SpawnOptions | undefined, onExit: NativeSpawnExitCallback): Promise<NativeSpawnResult>;
 }
 

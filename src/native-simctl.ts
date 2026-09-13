@@ -28,10 +28,12 @@ import {
   getDevices,
   getSupportedDeviceTypes,
   getSupportedRuntimes,
+  shutdownAllDevices,
   shutdownDevice,
   waitForBoot,
 } from './commands/lifecycle.js';
-import {grantPermission, resetPermission, revokePermission} from './commands/permissions.js';
+import {addMedia, addPhoto, addVideo} from './commands/media.js';
+import {getPermission, grantPermission, resetPermission, revokePermission} from './commands/permissions.js';
 import {spawnProcess} from './commands/spawn.js';
 import {
   getAppearance,
@@ -50,6 +52,7 @@ import './commands/darwin-notification.js';
 import './commands/interaction.js';
 import './commands/keychain.js';
 import './commands/lifecycle.js';
+import './commands/media.js';
 import './commands/permissions.js';
 import './commands/spawn.js';
 import './commands/ui.js';
@@ -152,6 +155,7 @@ Object.assign(NativeSimctl.prototype, {
   getBootStatus,
   waitForBoot,
   shutdownDevice,
+  shutdownAllDevices,
   eraseDevice,
 
   // app
@@ -162,6 +166,11 @@ Object.assign(NativeSimctl.prototype, {
   isAppInstalled,
   appInfo,
   installedApps,
+
+  // media
+  addMedia,
+  addPhoto,
+  addVideo,
 
   // interaction
   getEnv,
@@ -186,6 +195,7 @@ Object.assign(NativeSimctl.prototype, {
   grantPermission,
   revokePermission,
   resetPermission,
+  getPermission,
 
   // darwin notification
   getDarwinNotificationState,

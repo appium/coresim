@@ -308,4 +308,34 @@ int Spawn(id device, NSString* path, NSDictionary* options, dispatch_queue_t ter
   });
 }
 
+BOOL AddMedia(id device, NSArray<NSURL*>* fileURLs, NSError** error) {
+  static const std::string kSelectorName = "addMedia:error:";
+  RequireSelector(device, kSelectorName);
+  SEL selector = SelectorNamed(kSelectorName);
+  return SafeInvoke([&] {
+    using Fn = BOOL (*)(id, SEL, NSArray<NSURL*>*, NSError**);
+    return ((Fn)objc_msgSend)(device, selector, fileURLs, error);
+  });
+}
+
+BOOL AddPhoto(id device, NSURL* fileURL, NSError** error) {
+  static const std::string kSelectorName = "addPhoto:error:";
+  RequireSelector(device, kSelectorName);
+  SEL selector = SelectorNamed(kSelectorName);
+  return SafeInvoke([&] {
+    using Fn = BOOL (*)(id, SEL, NSURL*, NSError**);
+    return ((Fn)objc_msgSend)(device, selector, fileURL, error);
+  });
+}
+
+BOOL AddVideo(id device, NSURL* fileURL, NSError** error) {
+  static const std::string kSelectorName = "addVideo:error:";
+  RequireSelector(device, kSelectorName);
+  SEL selector = SelectorNamed(kSelectorName);
+  return SafeInvoke([&] {
+    using Fn = BOOL (*)(id, SEL, NSURL*, NSError**);
+    return ((Fn)objc_msgSend)(device, selector, fileURL, error);
+  });
+}
+
 }  // namespace coresim
