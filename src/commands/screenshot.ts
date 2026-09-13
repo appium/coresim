@@ -16,7 +16,8 @@ declare module '../native-simctl.js' {
  * if `options.displayId` doesn't match any display from {@link getDisplays}.
  *
  * @param udid — UDID of the device to capture; must be booted
- * @param options — `format` (defaults to `'png'`) and `displayId` (defaults to the primary display)
+ * @param options — `format` (defaults to `'png'`), `displayId` (defaults to the primary display),
+ * and `quality` (JPEG only, 0-100 percent)
  * @returns image data encoded as `options.format`
  */
 export async function getScreenshot(
@@ -24,6 +25,12 @@ export async function getScreenshot(
   udid: string,
   options: ScreenshotOptions = {},
 ): Promise<Buffer> {
+  if (
+    options.quality !== undefined &&
+    (!Number.isFinite(options.quality) || options.quality < 0 || options.quality > 100)
+  ) {
+    throw new RangeError(`quality must be a number between 0 and 100, got ${options.quality}`);
+  }
   return runCatchingAsync(async () => (await this._findDevice(udid)).screenshot(options));
 }
 

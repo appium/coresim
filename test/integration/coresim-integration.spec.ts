@@ -332,6 +332,11 @@ describe('NativeSimctl integration', () => {
         assert.deepStrictEqual(byId.subarray(0, 8), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
 
         await assert.rejects(sim.getScreenshot(device!.udid, {displayId: 'not-a-real-display-id'}));
+
+        const lowQuality = await sim.getScreenshot(device!.udid, {format: 'jpeg', quality: 10});
+        const highQuality = await sim.getScreenshot(device!.udid, {format: 'jpeg', quality: 95});
+        assert.ok(lowQuality.length < highQuality.length, 'lower JPEG quality should encode smaller');
+        await assert.rejects(sim.getScreenshot(device!.udid, {format: 'jpeg', quality: 101}), RangeError);
       });
 
       if (isIOSRuntime(fixture.runtimeIdentifier)) {

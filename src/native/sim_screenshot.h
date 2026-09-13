@@ -18,9 +18,11 @@ enum class ScreenshotFormat { kPNG, kJPEG };
 // <udid> screenshot` itself reads (see sim_screenshot.mm) — no temp file, no subprocess.
 // `displayId`, if non-nil, selects a specific port by its UUID (see ListDisplays); nil selects the
 // primary display (displayClass 0), falling back to the first renderable display found (e.g. for
-// tvOS, which has no class-0 display). Returns nil (and sets *error) if `displayId` doesn't match
-// any port, the resolved display has no renderable surface yet (e.g. not booted), or
-// rendering/encoding failed.
-NSData* CaptureScreenshot(id device, NSString* displayId, ScreenshotFormat format, NSError** error);
+// tvOS, which has no class-0 display). `jpegQualityPercent` (0-100, nil for ImageIO's own default)
+// only applies when `format` is kJPEG — ignored for kPNG, which is always lossless. Returns nil
+// (and sets *error) if `displayId` doesn't match any port, the resolved display has no renderable
+// surface yet (e.g. not booted), or rendering/encoding failed.
+NSData* CaptureScreenshot(id device, NSString* displayId, ScreenshotFormat format, NSNumber* jpegQualityPercent,
+                          NSError** error);
 
 }  // namespace coresim

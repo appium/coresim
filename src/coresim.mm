@@ -584,13 +584,15 @@ class NativeDevice : public Napi::ObjectWrap<NativeDevice> {
     });
   }
 
-  // `format`/`displayId` are this addon's own options, not a CoreSimulator options dictionary — the
-  // TS layer (commands/screenshot.ts) already constrains `format` to 'png'/'jpeg', so anything else
-  // (including absent) defaults to PNG here rather than validating again.
+  // `format`/`displayId`/`quality` are this addon's own options, not a CoreSimulator options
+  // dictionary — the TS layer (commands/screenshot.ts) already constrains `format` to
+  // 'png'/'jpeg' and `quality` to a finite 0-100, so anything else (including absent) is just
+  // defaulted here rather than validated again.
   Napi::Value Screenshot(const Napi::CallbackInfo& info) {
     id device = device_;
     coresim::ScreenshotFormat format = coresim::ScreenshotFormat::kPNG;
     NSString* displayId = nil;
+    NSNumber* jpegQualityPercent = nil;
     if (info.Length() > 0 && info[0].IsObject()) {
       Napi::Object options = info[0].As<Napi::Object>();
       if (options.Has("format") && options.Get("format").IsString() &&
@@ -600,12 +602,15 @@ class NativeDevice : public Napi::ObjectWrap<NativeDevice> {
       if (options.Has("displayId") && options.Get("displayId").IsString()) {
         displayId = @(options.Get("displayId").As<Napi::String>().Utf8Value().c_str());
       }
+      if (options.Has("quality") && options.Get("quality").IsNumber()) {
+        jpegQualityPercent = @(options.Get("quality").As<Napi::Number>().DoubleValue());
+      }
     }
     return RunAsync<NSData*>(
         info.Env(),
-        [device, displayId, format]() -> NSData* {
+        [device, displayId, format, jpegQualityPercent]() -> NSData* {
           NSError* error = nil;
-          NSData* result = coresim::CaptureScreenshot(device, displayId, format, &error);
+          NSData* result = coresim::CaptureScreenshot(device, displayId, format, jpegQualityPercent, &error);
           ThrowIfFailed(result != nil, error);
           return result;
         },

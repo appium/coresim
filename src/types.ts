@@ -119,6 +119,12 @@ export interface ScreenshotOptions {
    * (falling back to the first renderable display if none is primary, e.g. tvOS).
    */
   displayId?: string;
+  /**
+   * JPEG quality as a percentage (0 = smallest/most compressed, 100 = largest/least compressed).
+   * Only meaningful with `format: 'jpeg'` — ignored for `'png'`, which is always lossless.
+   * Defaults to ImageIO's own default (near-lossless) when omitted.
+   */
+  quality?: number;
 }
 
 /**
@@ -256,7 +262,7 @@ export interface NativeDeviceHandle {
   addVideo(filePath: string): Promise<void>;
   getPasteboard(): Promise<string>;
   setPasteboard(content: string): Promise<void>;
-  screenshot(options?: {format?: 'png' | 'jpeg'; displayId?: string}): Promise<Buffer>;
+  screenshot(options?: {format?: 'png' | 'jpeg'; displayId?: string; quality?: number}): Promise<Buffer>;
   getDisplays(): Promise<SimDisplayInfo[]>;
   spawn(path: string, options: SpawnOptions | undefined, onExit: NativeSpawnExitCallback): Promise<NativeSpawnResult>;
 }

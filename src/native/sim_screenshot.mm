@@ -161,7 +161,8 @@ NSArray<NSDictionary*>* ListDisplays(id device, NSError** error) {
   return result;
 }
 
-NSData* CaptureScreenshot(id device, NSString* displayId, ScreenshotFormat format, NSError** error) {
+NSData* CaptureScreenshot(id device, NSString* displayId, ScreenshotFormat format, NSNumber* jpegQualityPercent,
+                          NSError** error) {
   NSArray<NSDictionary*>* candidates = RenderableDisplayCandidates(device, error);
   if (candidates == nil) {
     return nil;
@@ -204,7 +205,14 @@ NSData* CaptureScreenshot(id device, NSString* displayId, ScreenshotFormat forma
     *error = MakeError(7, @"Failed to create an image encoder for the captured screenshot");
     return nil;
   }
-  CGImageDestinationAddImage(destination, cgImage, nullptr);
+  // kCGImageDestinationLossyCompressionQuality is meaningless for PNG (always lossless) — ImageIO
+  // silently ignores properties a format doesn't use, so this is only gated on jpegQualityPercent
+  // being present, not on `format` too.
+  NSDictionary* properties =
+      jpegQualityPercent != nil
+          ? @{(NSString*)kCGImageDestinationLossyCompressionQuality : @(jpegQualityPercent.doubleValue / 100.0)}
+          : nil;
+  CGImageDestinationAddImage(destination, cgImage, (__bridge CFDictionaryRef)properties);
   BOOL ok = CGImageDestinationFinalize(destination);
   CFRelease(destination);
   CGImageRelease(cgImage);
