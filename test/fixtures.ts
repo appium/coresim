@@ -1,5 +1,4 @@
 import {execFile} from 'node:child_process';
-import nodeFs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {promisify} from 'node:util';
@@ -90,9 +89,9 @@ const ONE_PIXEL_PNG_BASE64 =
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
 
 /** A throwaway 1x1 test image for addMedia/addPhoto — content doesn't matter. */
-export function createTestPhoto(): string {
+export async function createTestPhoto(): Promise<string> {
   const photoPath = path.join(os.tmpdir(), `coresim-test-photo-${Date.now()}-${process.pid}.png`);
-  nodeFs.writeFileSync(photoPath, Buffer.from(ONE_PIXEL_PNG_BASE64, 'base64'));
+  await fs.writeFile(photoPath, Buffer.from(ONE_PIXEL_PNG_BASE64, 'base64'));
   return photoPath;
 }
 

@@ -265,7 +265,7 @@ describe('NativeSimctl integration', () => {
       });
 
       it('adds media to the Photos library', async () => {
-        const photoPath = createTestPhoto();
+        const photoPath = await createTestPhoto();
         try {
           await sim.addPhoto(device!.udid, photoPath);
           await sim.addMedia(device!.udid, [photoPath]);
