@@ -529,12 +529,18 @@ class NativeDevice : public Napi::ObjectWrap<NativeDevice> {
           int stdoutFd = dup(stdoutPipe.fileHandleForReading.fileDescriptor);
           if (stdoutFd < 0) {
             int savedErrno = errno;
+            // No process has started at this point, so terminationHandler (the only other place
+            // that releases exitTsfn) will never run — release it here too, or the still-referenced
+            // ThreadSafeFunction keeps Node's event loop alive after the caller handles the
+            // rejection.
+            exitTsfn.Release();
             throw NSErrorException(MakeDescriptorError(@"stdout", savedErrno));
           }
           int stderrFd = dup(stderrPipe.fileHandleForReading.fileDescriptor);
           if (stderrFd < 0) {
             int savedErrno = errno;
             close(stdoutFd);
+            exitTsfn.Release();
             throw NSErrorException(MakeDescriptorError(@"stderr", savedErrno));
           }
 
