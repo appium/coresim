@@ -208,6 +208,11 @@ BOOL PushPasteboardStringModern(id device, NSString* content, NSError** error) {
       return true;
     });
     [NSThread sleepForTimeInterval:kPushSettleSeconds];
+    // No completion callback to wait on (see kPushSettleSeconds above), but a disconnect during
+    // the settle sleep is still a real, already-known failure — report it instead of a false YES.
+    if (delegate.connectionLost) {
+      throw NSErrorException(MakeError(9, @"Lost the connection to the device's pasteboard before push settled"));
+    }
     return YES;
   } @finally {
     [pasteboard releaseGlobally];
