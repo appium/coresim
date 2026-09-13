@@ -39,16 +39,29 @@ unsigned short DisplayClass(id descriptorState) {
   });
 }
 
-// Finds the IO port descriptor for the device's main display among -[SimDeviceIOClient ioPorts].
-// Only a port that actually renders a screen conforms to the (private, headerless)
-// SimDisplayIOSurfaceRenderable/SimDisplayRenderable protocols — other ports (audio, the
-// screenshot mach service itself) don't respond to either accessor below, so the
-// respondsToSelector: checks are the actual filter, not defensive leftovers. Prefers displayClass
-// 0 (the main display) but falls back to the first renderable display found, so a target with no
-// class-0 display (e.g. tvOS) still gets a screenshot instead of an outright failure.
-id FindMainDisplayDescriptor(id ioClient) {
+// One renderable display IO port found among -[SimDeviceIOClient ioPorts]. Keeps "descriptor"
+// alongside the JS-facing "id"/"displayClass" fields so CaptureScreenshot can resolve a requested
+// displayId against the same list ListDisplays reports, without walking ioPorts twice.
+NSString* const kCandidateUUIDKey = @"id";
+NSString* const kCandidateDisplayClassKey = @"displayClass";
+NSString* const kCandidateDescriptorKey = @"descriptor";
+
+// Every IO port that actually renders a screen, in -[SimDeviceIOClient ioPorts]'s own order. Only
+// a port conforming to the (private, headerless) SimDisplayIOSurfaceRenderable/SimDisplayRenderable
+// protocols carries a "displayClass" or either surface accessor — other ports (audio, the
+// screenshot mach service itself) don't, so the respondsToSelector: checks below are the actual
+// filter, not defensive leftovers. Returns nil (and sets *error) only if the device has no IO
+// client at all (e.g. not booted); no renderable port is an empty array, not an error — the caller
+// decides whether that's fatal.
+NSArray<NSDictionary*>* RenderableDisplayCandidates(id device, NSError** error) {
+  id ioClient = IdGetter(device, "io");
+  if (ioClient == nil) {
+    *error = MakeError(1, @"Device has no IO client available — is it booted?");
+    return nil;
+  }
+
   NSArray* ports = IdGetter(ioClient, "ioPorts");
-  id fallback = nil;
+  NSMutableArray<NSDictionary*>* candidates = [NSMutableArray array];
   for (id port in ports) {
     id descriptor = IdGetter(port, "descriptor");
     if (descriptor == nil) continue;
@@ -63,12 +76,41 @@ id FindMainDisplayDescriptor(id ioClient) {
     if (state == nil || ![state respondsToSelector:NSSelectorFromString(@"displayClass")]) {
       continue;
     }
-    if (DisplayClass(state) == 0) {
-      return descriptor;
+    NSUUID* uuid = IdGetter(port, "uuid");
+    [candidates addObject:@{
+      kCandidateUUIDKey : uuid ? uuid.UUIDString : @"",
+      kCandidateDisplayClassKey : @(DisplayClass(state)),
+      kCandidateDescriptorKey : descriptor,
+    }];
+  }
+  return candidates;
+}
+
+// Picks which candidate CaptureScreenshot should read from: the one matching `displayId` if given
+// (an error if none match), else the primary display (displayClass 0), falling back to the first
+// renderable display found so a target with no class-0 display (e.g. tvOS) still gets a
+// screenshot instead of an outright failure.
+id ResolveDisplayDescriptor(NSArray<NSDictionary*>* candidates, NSString* displayId, NSError** error) {
+  if (displayId != nil) {
+    for (NSDictionary* candidate in candidates) {
+      if ([candidate[kCandidateUUIDKey] isEqualToString:displayId]) {
+        return candidate[kCandidateDescriptorKey];
+      }
+    }
+    *error = MakeError(2, [NSString stringWithFormat:@"No display with id '%@' was found on this device", displayId]);
+    return nil;
+  }
+  id fallback = nil;
+  for (NSDictionary* candidate in candidates) {
+    if ([candidate[kCandidateDisplayClassKey] unsignedShortValue] == 0) {
+      return candidate[kCandidateDescriptorKey];
     }
     if (fallback == nil) {
-      fallback = descriptor;
+      fallback = candidate[kCandidateDescriptorKey];
     }
+  }
+  if (fallback == nil) {
+    *error = MakeError(3, @"No renderable display port was found on this device");
   }
   return fallback;
 }
@@ -90,38 +132,56 @@ id OptionalIdGetter(id target, NSString* selectorName) {
 
 // `framebufferSurface` is the primary surface since Xcode 13.2 split what used to be a single
 // `ioSurface`; both are real (non-optional) members of the descriptor's protocol once it's passed
-// FindMainDisplayDescriptor's filter above, but the underlying remote proxy can still legitimately
+// RenderableDisplayCandidates' filter above, but the underlying remote proxy can still legitimately
 // vend nil for either — or stop responding entirely if the connection just dropped — so both are
 // tried before giving up.
 id RenderableSurface(id descriptor) {
   return OptionalIdGetter(descriptor, @"framebufferSurface") ?: OptionalIdGetter(descriptor, @"ioSurface");
 }
 
+NSString* const kPNGUTI = @"public.png";
+NSString* const kJPEGUTI = @"public.jpeg";
+
 }  // namespace
 
-NSData* CaptureScreenshotPNG(id device, NSError** error) {
-  id ioClient = IdGetter(device, "io");
-  if (ioClient == nil) {
-    *error = MakeError(1, @"Device has no IO client available — is it booted?");
+NSArray<NSDictionary*>* ListDisplays(id device, NSError** error) {
+  NSArray<NSDictionary*>* candidates = RenderableDisplayCandidates(device, error);
+  if (candidates == nil) {
+    return nil;
+  }
+  NSMutableArray<NSDictionary*>* result = [NSMutableArray arrayWithCapacity:candidates.count];
+  for (NSDictionary* candidate in candidates) {
+    unsigned short displayClass = [candidate[kCandidateDisplayClassKey] unsignedShortValue];
+    [result addObject:@{
+      @"id" : candidate[kCandidateUUIDKey],
+      @"displayClass" : candidate[kCandidateDisplayClassKey],
+      @"isMain" : @(displayClass == 0),
+    }];
+  }
+  return result;
+}
+
+NSData* CaptureScreenshot(id device, NSString* displayId, ScreenshotFormat format, NSError** error) {
+  NSArray<NSDictionary*>* candidates = RenderableDisplayCandidates(device, error);
+  if (candidates == nil) {
     return nil;
   }
 
-  id descriptor = FindMainDisplayDescriptor(ioClient);
+  id descriptor = ResolveDisplayDescriptor(candidates, displayId, error);
   if (descriptor == nil) {
-    *error = MakeError(2, @"No renderable display port was found on this device");
     return nil;
   }
 
   id surfaceObj = RenderableSurface(descriptor);
   if (surfaceObj == nil) {
-    *error = MakeError(3, @"The device's display surface is not available yet");
+    *error = MakeError(4, @"The device's display surface is not available yet");
     return nil;
   }
 
   IOSurfaceRef surfaceRef = (__bridge IOSurfaceRef)surfaceObj;
   CIImage* ciImage = [CIImage imageWithIOSurface:surfaceRef];
   if (ciImage == nil) {
-    *error = MakeError(4, @"Failed to wrap the device's display surface as an image");
+    *error = MakeError(5, @"Failed to wrap the device's display surface as an image");
     return nil;
   }
 
@@ -131,16 +191,17 @@ NSData* CaptureScreenshotPNG(id device, NSError** error) {
   CIContext* context = [CIContext contextWithOptions:nil];
   CGImageRef cgImage = [context createCGImage:ciImage fromRect:ciImage.extent];
   if (cgImage == nil) {
-    *error = MakeError(5, @"Failed to render the device's display surface");
+    *error = MakeError(6, @"Failed to render the device's display surface");
     return nil;
   }
 
-  NSMutableData* pngData = [NSMutableData data];
+  NSString* uti = format == ScreenshotFormat::kJPEG ? kJPEGUTI : kPNGUTI;
+  NSMutableData* imageData = [NSMutableData data];
   CGImageDestinationRef destination =
-      CGImageDestinationCreateWithData((__bridge CFMutableDataRef)pngData, CFSTR("public.png"), 1, NULL);
+      CGImageDestinationCreateWithData((__bridge CFMutableDataRef)imageData, (__bridge CFStringRef)uti, 1, NULL);
   if (destination == nullptr) {
     CGImageRelease(cgImage);
-    *error = MakeError(6, @"Failed to create a PNG encoder for the captured screenshot");
+    *error = MakeError(7, @"Failed to create an image encoder for the captured screenshot");
     return nil;
   }
   CGImageDestinationAddImage(destination, cgImage, nullptr);
@@ -148,10 +209,10 @@ NSData* CaptureScreenshotPNG(id device, NSError** error) {
   CFRelease(destination);
   CGImageRelease(cgImage);
   if (!ok) {
-    *error = MakeError(7, @"Failed to encode the captured screenshot as PNG");
+    *error = MakeError(8, @"Failed to encode the captured screenshot");
     return nil;
   }
-  return pngData;
+  return imageData;
 }
 
 }  // namespace coresim

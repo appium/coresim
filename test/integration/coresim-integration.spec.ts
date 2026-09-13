@@ -310,7 +310,7 @@ describe('NativeSimctl integration', () => {
         assert.strictEqual(await sim.getPasteboard(device!.udid), 'coresim-pasteboard-test');
       });
 
-      it('captures a PNG screenshot of the booted device', async (t) => {
+      it('captures a screenshot of the booted device (PNG default, JPEG, and by displayId)', async (t) => {
         let png: Buffer;
         try {
           png = await sim.getScreenshot(device!.udid);
@@ -320,8 +320,18 @@ describe('NativeSimctl integration', () => {
           }
           throw err;
         }
-        assert.ok(png.length > 0);
         assert.deepStrictEqual(png.subarray(0, 8), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+
+        const jpeg = await sim.getScreenshot(device!.udid, {format: 'jpeg'});
+        assert.deepStrictEqual(jpeg.subarray(0, 3), Buffer.from([0xff, 0xd8, 0xff]));
+
+        const displays = await sim.getDisplays(device!.udid);
+        const mainDisplay = displays.find((d) => d.isMain);
+        assert.ok(mainDisplay, 'expected at least one display reporting isMain');
+        const byId = await sim.getScreenshot(device!.udid, {displayId: mainDisplay!.id});
+        assert.deepStrictEqual(byId.subarray(0, 8), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+
+        await assert.rejects(sim.getScreenshot(device!.udid, {displayId: 'not-a-real-display-id'}));
       });
 
       if (isIOSRuntime(fixture.runtimeIdentifier)) {

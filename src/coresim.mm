@@ -584,19 +584,47 @@ class NativeDevice : public Napi::ObjectWrap<NativeDevice> {
     });
   }
 
+  // `format`/`displayId` are this addon's own options, not a CoreSimulator options dictionary — the
+  // TS layer (commands/screenshot.ts) already constrains `format` to 'png'/'jpeg', so anything else
+  // (including absent) defaults to PNG here rather than validating again.
   Napi::Value Screenshot(const Napi::CallbackInfo& info) {
     id device = device_;
+    coresim::ScreenshotFormat format = coresim::ScreenshotFormat::kPNG;
+    NSString* displayId = nil;
+    if (info.Length() > 0 && info[0].IsObject()) {
+      Napi::Object options = info[0].As<Napi::Object>();
+      if (options.Has("format") && options.Get("format").IsString() &&
+          options.Get("format").As<Napi::String>().Utf8Value() == "jpeg") {
+        format = coresim::ScreenshotFormat::kJPEG;
+      }
+      if (options.Has("displayId") && options.Get("displayId").IsString()) {
+        displayId = @(options.Get("displayId").As<Napi::String>().Utf8Value().c_str());
+      }
+    }
     return RunAsync<NSData*>(
         info.Env(),
-        [device]() -> NSData* {
+        [device, displayId, format]() -> NSData* {
           NSError* error = nil;
-          NSData* result = coresim::CaptureScreenshotPNG(device, &error);
+          NSData* result = coresim::CaptureScreenshot(device, displayId, format, &error);
           ThrowIfFailed(result != nil, error);
           return result;
         },
         [](Napi::Env env, NSData* result) -> Napi::Value {
           return Napi::Buffer<uint8_t>::Copy(env, static_cast<const uint8_t*>(result.bytes), result.length);
         });
+  }
+
+  Napi::Value GetDisplays(const Napi::CallbackInfo& info) {
+    id device = device_;
+    return RunAsync<NSArray*>(
+        info.Env(),
+        [device]() -> NSArray* {
+          NSError* error = nil;
+          NSArray* result = coresim::ListDisplays(device, &error);
+          ThrowIfFailed(result != nil, error);
+          return result;
+        },
+        [](Napi::Env env, NSArray* result) -> Napi::Value { return NSObjectToJsValue(env, result); });
   }
 
   // Option dictionary keys for `spawnWithPath:options:...` aren't part of the ObjC runtime
@@ -765,6 +793,7 @@ void NativeDevice::Init(Napi::Env env) {
                       InstanceMethod<&NativeDevice::GetPasteboard>("getPasteboard"),
                       InstanceMethod<&NativeDevice::SetPasteboard>("setPasteboard"),
                       InstanceMethod<&NativeDevice::Screenshot>("screenshot"),
+                      InstanceMethod<&NativeDevice::GetDisplays>("getDisplays"),
                       InstanceMethod<&NativeDevice::Spawn>("spawn"),
                   });
   env.GetInstanceData<AddonInstanceData>()->deviceConstructor = Napi::Persistent(ctor);

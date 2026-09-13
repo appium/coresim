@@ -1,21 +1,39 @@
 import type {NativeSimctl} from '../native-simctl.js';
+import type {ScreenshotOptions, SimDisplayInfo} from '../types.js';
 import {runCatchingAsync} from '../utils/index.js';
 
 declare module '../native-simctl.js' {
   interface NativeSimctl {
-    getScreenshot(udid: string): Promise<Buffer>;
+    getScreenshot(udid: string, options?: ScreenshotOptions): Promise<Buffer>;
+    getDisplays(udid: string): Promise<SimDisplayInfo[]>;
   }
 }
 
 /**
- * Captures the device's main display as a PNG — the native equivalent of `simctl io <udid>
- * screenshot` (see native/sim_screenshot.mm for how this reads the framebuffer directly, with no
- * temp file or subprocess). Rejects if the device has no renderable display surface yet (e.g. not
- * booted).
+ * Captures a device display as an image — the native equivalent of `simctl io <udid> screenshot`
+ * (see native/sim_screenshot.mm for how this reads the framebuffer directly, with no temp file or
+ * subprocess). Rejects if the resolved display has no renderable surface yet (e.g. not booted), or
+ * if `options.displayId` doesn't match any display from {@link getDisplays}.
  *
  * @param udid — UDID of the device to capture; must be booted
- * @returns PNG-encoded image data
+ * @param options — `format` (defaults to `'png'`) and `displayId` (defaults to the primary display)
+ * @returns image data encoded as `options.format`
  */
-export async function getScreenshot(this: NativeSimctl, udid: string): Promise<Buffer> {
-  return runCatchingAsync(async () => (await this._findDevice(udid)).screenshot());
+export async function getScreenshot(
+  this: NativeSimctl,
+  udid: string,
+  options: ScreenshotOptions = {},
+): Promise<Buffer> {
+  return runCatchingAsync(async () => (await this._findDevice(udid)).screenshot(options));
+}
+
+/**
+ * Lists the device's renderable displays — the same information `simctl io <udid> enumerate`
+ * reports for its own `--display` selection. Most devices report exactly one (the primary
+ * display); a device with a secondary display (e.g. tvOS's TVOut) reports more than one.
+ *
+ * @param udid — UDID of the device to inspect; must be booted
+ */
+export async function getDisplays(this: NativeSimctl, udid: string): Promise<SimDisplayInfo[]> {
+  return runCatchingAsync(async () => (await this._findDevice(udid)).getDisplays());
 }
