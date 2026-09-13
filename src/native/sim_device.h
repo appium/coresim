@@ -58,6 +58,12 @@ BOOL Erase(id device, NSError** error);
 // -[SimDevice getenv:error:]
 NSString* Getenv(id device, NSString* name, NSError** error);
 
+// -[SimDevice lookup:error:] -> a Mach port (0/MACH_PORT_NULL on failure), resolved within the
+// device's own launchd_sim bootstrap namespace by name. Confirmed empirically (see CLAUDE.md) to
+// need no special entitlement — used to reach the pasteboard sync service (sim_pasteboard.h),
+// the same way Apple's own Simulator.app does.
+unsigned int LookupMachPort(id device, NSString* serviceName, NSError** error);
+
 // -[SimDevice installApplication:withOptions:error:]
 BOOL InstallApp(id device, NSURL* appURL, NSDictionary* options, NSError** error);
 

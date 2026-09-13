@@ -8,7 +8,7 @@ import {after, before, describe, it} from 'node:test';
 
 import {waitForCondition} from 'asyncbox';
 
-import {NativeSimctl, SimDeviceState, type SimDeviceInfo} from '../../src/index.js';
+import {NativeSimctl, NativeSimUnavailableError, SimDeviceState, type SimDeviceInfo} from '../../src/index.js';
 import {
   createSelfSignedCert,
   createTestPhoto,
@@ -293,6 +293,21 @@ describe('NativeSimctl integration', () => {
         } finally {
           await fs.promises.rm(videoPath, {force: true});
         }
+      });
+
+      it('sets and gets the device pasteboard, whichever of the two native mechanisms this CoreSimulator has', async (t) => {
+        // Exercises whichever path this runner's CoreSimulator supports (legacy or modern — see
+        // CLAUDE.md) without hardcoding which; a real t.skip(), not a silent early return, if
+        // neither is present.
+        try {
+          await sim.setPasteboard(device!.udid, 'coresim-pasteboard-test');
+        } catch (err) {
+          if (err instanceof NativeSimUnavailableError) {
+            return t.skip(`pasteboard sync unavailable on this CoreSimulator: ${err.message}`);
+          }
+          throw err;
+        }
+        assert.strictEqual(await sim.getPasteboard(device!.udid), 'coresim-pasteboard-test');
       });
 
       if (isIOSRuntime(fixture.runtimeIdentifier)) {

@@ -105,6 +105,16 @@ NSString* Getenv(id device, NSString* name, NSError** error) {
   });
 }
 
+unsigned int LookupMachPort(id device, NSString* serviceName, NSError** error) {
+  static const std::string kSelectorName = "lookup:error:";
+  RequireSelector(device, kSelectorName);
+  SEL selector = SelectorNamed(kSelectorName);
+  return SafeInvoke([&] {
+    using Fn = unsigned int (*)(id, SEL, NSString*, NSError**);
+    return ((Fn)objc_msgSend)(device, selector, serviceName, error);
+  });
+}
+
 BOOL InstallApp(id device, NSURL* appURL, NSDictionary* options, NSError** error) {
   static const std::string kSelectorName = "installApplication:withOptions:error:";
   RequireSelector(device, kSelectorName);
