@@ -172,19 +172,9 @@ export async function shutdownDevice(this: NativeSimctl, udid: string): Promise<
 
 /**
  * Best-effort shutdown of every device in the default device set that isn't already `Shutdown` —
- * the native equivalent of `xcrun simctl shutdown all`.
- *
- * Deliberately implemented as a fan-out over the already-verified per-device {@link shutdownDevice}
- * path rather than `SimDeviceSet`'s own bulk
- * `shutdownBootedDevicesMatchingVolumeURL:completionGroup:deviceShutdownHandler:` method: that
- * method takes a raw GCD completion block whose exact parameter signature couldn't be confirmed
- * from the framework's runtime metadata alone (unlike every other native call in this addon — see
- * CLAUDE.md on wrong-shaped native arguments crashing the whole process, not just the call), and
- * guessing at a block's arity is a real crash risk in a way a plain object/BOOL/NSError argument
- * mismatch isn't (safe_dispatch's `@try`/`@catch` doesn't guard against it). Individual shutdown
- * failures are swallowed here (e.g. a device that reached `Shutdown` between the state check and
- * the call) rather than failing the whole batch, matching `simctl shutdown all`'s own best-effort
- * behavior.
+ * the native equivalent of `xcrun simctl shutdown all`. A fan-out over {@link shutdownDevice}
+ * rather than `SimDeviceSet`'s own bulk method, whose completion-block signature couldn't be
+ * confirmed safely (see commit message). Per-device failures are swallowed.
  */
 export async function shutdownAllDevices(this: NativeSimctl): Promise<void> {
   return runCatchingAsync(async () => {

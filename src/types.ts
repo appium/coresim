@@ -70,12 +70,6 @@ export interface SimBootInfo {
 }
 
 /**
- * A privacy permission grantable via `NativeSimctl.grantPermission`/`revokePermission`/
- * `resetPermission`. Each is backed by a row in the simulator's own TCC (privacy) database —
- * `location` isn't included since CoreLocation simulation has its own subsystem, not a plain TCC
- * row (see CLAUDE.md).
- */
-/**
  * Result of `NativeSimctl.getPermission` — mirrors the TCC database's own auth states rather than
  * a plain boolean, since `'unset'` (never prompted/decided) and `'denied'` (explicitly refused)
  * are different states with different UI implications. `'limited'` only applies to `photos`
@@ -84,6 +78,12 @@ export interface SimBootInfo {
  */
 export type SimPermissionStatus = 'unset' | 'denied' | 'granted' | 'limited';
 
+/**
+ * A privacy permission grantable via `NativeSimctl.grantPermission`/`revokePermission`/
+ * `resetPermission`. Each is backed by a row in the simulator's own TCC (privacy) database —
+ * `location` isn't included since CoreLocation simulation has its own subsystem, not a plain TCC
+ * row (see CLAUDE.md).
+ */
 export type SimPermissionService =
   | 'calendar'
   | 'camera'
