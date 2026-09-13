@@ -11,7 +11,7 @@ import {getPkgRoot} from '../../src/utils/index.js';
 // it's handed to a spawned subprocess as an import specifier string, not used as a static import
 // here — getPkgRoot() is the same package-root resolution the native addon loader itself relies
 // on, so this can't silently drift from where lib/src/index.js actually ends up.
-const INDEX_MODULE_URL = pathToFileURL(path.join(getPkgRoot(), 'lib/src/index.js')).href;
+const INDEX_MODULE_URL = pathToFileURL(path.join(getPkgRoot(), 'lib', 'src', 'index.js')).href;
 
 /**
  * Read-only checks against the real CoreSimulator device set — nothing here boots, creates, or

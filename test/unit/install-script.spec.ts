@@ -10,7 +10,7 @@ import {getPkgRoot} from '../../src/utils/index.js';
 // lives under lib/ — scripts/ and package.json aren't part of the src/ -> lib/src/ mirror, so a
 // relative "../../../" climb from here would need to know (and keep in sync with) that exact
 // nesting depth, the same fragile counting the native addon loader itself avoids.
-const INSTALL_SCRIPT = path.join(getPkgRoot(), 'scripts/install.mjs');
+const INSTALL_SCRIPT = path.join(getPkgRoot(), 'scripts', 'install.mjs');
 const PACKAGE_JSON = path.join(getPkgRoot(), 'package.json');
 
 /**

@@ -60,6 +60,22 @@ void ThrowIfFailed(BOOL ok, NSError* error) {
   }
 }
 
+// Mirrors coresim::TCCAuthStatus (tcc_privacy.h) as the string enum getPermission() resolves with
+// — a plain string, not a raw int, since JS callers have no header to interpret the int against.
+const char* TCCAuthStatusToString(TCCAuthStatus status) {
+  switch (status) {
+    case kTCCAuthDenied:
+      return "denied";
+    case kTCCAuthGranted:
+      return "granted";
+    case kTCCAuthLimited:
+      return "limited";
+    case kTCCAuthNotDetermined:
+    default:
+      return "unset";
+  }
+}
+
 // dup() failure (e.g. EMFILE — the process fd table is full) — surfaced as a normal catchable
 // error via ThrowIfFailed's own throw path, rather than an fd of -1 silently reaching JS.
 NSError* MakeDescriptorError(NSString* which, int savedErrno) {
@@ -446,6 +462,26 @@ class NativeDevice : public Napi::ObjectWrap<NativeDevice> {
     });
   }
 
+  // Reads directly from the same TCC.db SetPermission/ResetPermission write to — no
+  // CoreSimulator getter for privacy-access state exists (see tcc_privacy.h).
+  Napi::Value GetPermission(const Napi::CallbackInfo& info) {
+    id device = device_;
+    NSString* service = @(info[0].As<Napi::String>().Utf8Value().c_str());
+    NSString* bundleId = @(info[1].As<Napi::String>().Utf8Value().c_str());
+    return RunAsync<TCCAuthStatus>(
+        info.Env(),
+        [device, service, bundleId]() -> TCCAuthStatus {
+          NSError* error = nil;
+          TCCAuthStatus status = kTCCAuthNotDetermined;
+          NSString* dataPath = coresim::DeviceDataPath(device);
+          ThrowIfFailed(coresim::GetTCCAccess(dataPath, service, bundleId, &status, &error), error);
+          return status;
+        },
+        [](Napi::Env env, TCCAuthStatus status) -> Napi::Value {
+          return Napi::String::New(env, TCCAuthStatusToString(status));
+        });
+  }
+
   Napi::Value DarwinNotificationGetState(const Napi::CallbackInfo& info) {
     id device = device_;
     NSString* name = @(info[0].As<Napi::String>().Utf8Value().c_str());
@@ -487,6 +523,38 @@ class NativeDevice : public Napi::ObjectWrap<NativeDevice> {
     return RunAsyncVoid(info.Env(), [device, name]() {
       NSError* error = nil;
       ThrowIfFailed(coresim::PostDarwinNotification(device, name, &error), error);
+    });
+  }
+
+  Napi::Value AddMedia(const Napi::CallbackInfo& info) {
+    id device = device_;
+    Napi::Array paths = info[0].As<Napi::Array>();
+    NSMutableArray<NSURL*>* fileURLs = [NSMutableArray arrayWithCapacity:paths.Length()];
+    for (uint32_t i = 0; i < paths.Length(); i++) {
+      Napi::Value path = paths.Get(i);
+      [fileURLs addObject:[NSURL fileURLWithPath:@(path.As<Napi::String>().Utf8Value().c_str())]];
+    }
+    return RunAsyncVoid(info.Env(), [device, fileURLs]() {
+      NSError* error = nil;
+      ThrowIfFailed(coresim::AddMedia(device, fileURLs, &error), error);
+    });
+  }
+
+  Napi::Value AddPhoto(const Napi::CallbackInfo& info) {
+    id device = device_;
+    NSURL* url = [NSURL fileURLWithPath:@(info[0].As<Napi::String>().Utf8Value().c_str())];
+    return RunAsyncVoid(info.Env(), [device, url]() {
+      NSError* error = nil;
+      ThrowIfFailed(coresim::AddPhoto(device, url, &error), error);
+    });
+  }
+
+  Napi::Value AddVideo(const Napi::CallbackInfo& info) {
+    id device = device_;
+    NSURL* url = [NSURL fileURLWithPath:@(info[0].As<Napi::String>().Utf8Value().c_str())];
+    return RunAsyncVoid(info.Env(), [device, url]() {
+      NSError* error = nil;
+      ThrowIfFailed(coresim::AddVideo(device, url, &error), error);
     });
   }
 
@@ -646,9 +714,13 @@ void NativeDevice::Init(Napi::Env env) {
                       InstanceMethod<&NativeDevice::GrantPermission>("grantPermission"),
                       InstanceMethod<&NativeDevice::RevokePermission>("revokePermission"),
                       InstanceMethod<&NativeDevice::ResetPermission>("resetPermission"),
+                      InstanceMethod<&NativeDevice::GetPermission>("getPermission"),
                       InstanceMethod<&NativeDevice::DarwinNotificationGetState>("darwinNotificationGetState"),
                       InstanceMethod<&NativeDevice::DarwinNotificationSetState>("darwinNotificationSetState"),
                       InstanceMethod<&NativeDevice::PostDarwinNotification>("postDarwinNotification"),
+                      InstanceMethod<&NativeDevice::AddMedia>("addMedia"),
+                      InstanceMethod<&NativeDevice::AddPhoto>("addPhoto"),
+                      InstanceMethod<&NativeDevice::AddVideo>("addVideo"),
                       InstanceMethod<&NativeDevice::Spawn>("spawn"),
                   });
   env.GetInstanceData<AddonInstanceData>()->deviceConstructor = Napi::Persistent(ctor);

@@ -9,7 +9,14 @@ import {after, before, describe, it} from 'node:test';
 import {waitForCondition} from 'asyncbox';
 
 import {NativeSimctl, SimDeviceState, type SimDeviceInfo} from '../../src/index.js';
-import {getUIKitCatalogPath, UICATALOG_BUNDLE_ID} from '../fixtures.js';
+import {
+  createSelfSignedCert,
+  createTestPhoto,
+  createTestVideo,
+  getUIKitCatalogPath,
+  hasFfmpeg,
+  UICATALOG_BUNDLE_ID,
+} from '../fixtures.js';
 
 // GitHub Actions sets this for every job. Spawning a process through CoreSimulator's own launch
 // mechanism has been observed, intermittently and on more than one Xcode/macOS matrix leg, to
@@ -19,6 +26,12 @@ import {getUIKitCatalogPath, UICATALOG_BUNDLE_ID} from '../fixtures.js';
 const IS_CI = Boolean(process.env.CI);
 const SKIP_UNSTABLE_IN_CI = IS_CI
   ? 'unstable in CI: spawned processes have intermittently been observed aborting immediately on hosted runners'
+  : false;
+// This suite otherwise shares a single boot cycle per Xcode version (see integration-test.yml) —
+// shutdownAllDevices() needs its own second throwaway device booted/deleted just to exercise it,
+// which would materially add to CI's already-expensive real-boot cost for one extra assertion.
+const SKIP_EXPENSIVE_IN_CI = IS_CI
+  ? 'too expensive for CI: requires booting a second throwaway device beyond this suite’s shared one'
   : false;
 
 /**
@@ -32,27 +45,6 @@ async function waitUntilDeleted(sim: NativeSimctl, udid: string): Promise<void> 
     intervalMs: 250,
     error: 'expected the throwaway device to disappear',
   });
-}
-
-/** A throwaway self-signed cert for addCertificate/addRootCertificate — content doesn't matter. */
-function createSelfSignedCert(): string {
-  const certPath = path.join(os.tmpdir(), `coresim-test-cert-${Date.now()}-${process.pid}.pem`);
-  execFileSync('openssl', [
-    'req',
-    '-x509',
-    '-newkey',
-    'rsa:2048',
-    '-keyout',
-    '/dev/null',
-    '-out',
-    certPath,
-    '-days',
-    '1',
-    '-nodes',
-    '-subj',
-    '/CN=coresim-test',
-  ]);
-  return certPath;
 }
 
 /** iOS-only checks (app install, openUrl) need a real browser/app-install surface tvOS/watchOS/visionOS don't have. */
@@ -69,7 +61,18 @@ function isIOSRuntime(runtimeIdentifier: string): boolean {
  * after resetPermission)
  */
 function readTCCGranted(udid: string, tccService: string, bundleId: string): boolean | undefined {
-  const dbPath = path.join(os.homedir(), 'Library/Developer/CoreSimulator/Devices', udid, 'data/Library/TCC/TCC.db');
+  const dbPath = path.join(
+    os.homedir(),
+    'Library',
+    'Developer',
+    'CoreSimulator',
+    'Devices',
+    udid,
+    'data',
+    'Library',
+    'TCC',
+    'TCC.db',
+  );
   const query = (sql: string) =>
     Number(execFileSync('sqlite3', ['-line', dbPath, sql], {encoding: 'utf8'}).split('=')[1]?.trim() ?? '0');
   const rowExists =
@@ -124,7 +127,7 @@ const fixtures = await availableRuntimeFixtures(sim);
 const targets = fixtures.slice(0, 1);
 // One throwaway cert shared across every runtime's keychain checks — its content is irrelevant,
 // so there's no reason to mint a fresh one per runtime.
-const certPath = createSelfSignedCert();
+const certPath = await createSelfSignedCert();
 
 /**
  * Mutating coverage against the real CoreSimulator device set, run against one throwaway device
@@ -257,6 +260,41 @@ describe('NativeSimctl integration', () => {
         assert.strictEqual(readTCCGranted(device!.udid, 'kTCCServiceCamera', bundleId), undefined);
       });
 
+      it('reads a privacy permission status through the same grant/revoke/reset lifecycle', async () => {
+        const bundleId = 'com.appium.coresim.doesnotexist';
+
+        assert.strictEqual(await sim.getPermission(device!.udid, 'contacts', bundleId), 'unset');
+
+        await sim.grantPermission(device!.udid, 'contacts', bundleId);
+        assert.strictEqual(await sim.getPermission(device!.udid, 'contacts', bundleId), 'granted');
+
+        await sim.revokePermission(device!.udid, 'contacts', bundleId);
+        assert.strictEqual(await sim.getPermission(device!.udid, 'contacts', bundleId), 'denied');
+
+        await sim.resetPermission(device!.udid, 'contacts', bundleId);
+        assert.strictEqual(await sim.getPermission(device!.udid, 'contacts', bundleId), 'unset');
+      });
+
+      it('adds media to the Photos library', async () => {
+        const photoPath = await createTestPhoto();
+        try {
+          await sim.addPhoto(device!.udid, photoPath);
+          await sim.addMedia(device!.udid, [photoPath]);
+        } finally {
+          await fs.promises.rm(photoPath, {force: true});
+        }
+
+        if (!(await hasFfmpeg())) {
+          return;
+        }
+        const videoPath = await createTestVideo();
+        try {
+          await sim.addVideo(device!.udid, videoPath);
+        } finally {
+          await fs.promises.rm(videoPath, {force: true});
+        }
+      });
+
       if (isIOSRuntime(fixture.runtimeIdentifier)) {
         it('opens a URL', async () => {
           await sim.openUrl(device!.udid, 'https://appium.io');
@@ -351,6 +389,40 @@ describe('NativeSimctl integration', () => {
           (await sim.getDevices()).find((d) => d.udid === device!.udid)?.state,
           SimDeviceState.Shutdown,
         );
+      });
+
+      // Also last (after the shared `device` above is already Shutdown, so this can't disturb any
+      // other test in this file): shutdownAllDevices() operates on the *entire* default device
+      // set, not just devices this suite created, so it's exercised here against its own dedicated
+      // throwaway device. It would still shut down any other simulator a developer happens to have
+      // booted locally at the same time — an inherent, documented characteristic of the native
+      // operation being tested (see lifecycle.ts), not a test bug.
+      it('shuts down every booted device in the default set', {skip: SKIP_EXPENSIVE_IN_CI}, async () => {
+        const extra = await sim.createDevice(
+          `coresim-test-shutdownall-${Date.now()}`,
+          fixture.deviceTypeIdentifier,
+          fixture.runtimeIdentifier,
+        );
+        try {
+          await sim.bootDevice(extra.udid);
+          await sim.waitForBoot(extra.udid);
+          await sim.shutdownAllDevices();
+          assert.strictEqual(
+            (await sim.getDevices()).find((d) => d.udid === extra.udid)?.state,
+            SimDeviceState.Shutdown,
+          );
+        } finally {
+          // Mirrors the outer after() hook above: an earlier failure (boot, waitForBoot, the
+          // assertion) can leave `extra` still Booted, and shutdownDevice() on an already-Shutdown
+          // device rejects rather than no-oping — checking first keeps that from masking the real
+          // failure. deleteDevice's removal is async (see waitUntilDeleted), so poll for it too.
+          const current = (await sim.getDevices()).find((d) => d.udid === extra.udid);
+          if (current?.state === SimDeviceState.Booted) {
+            await sim.shutdownDevice(extra.udid);
+          }
+          await sim.deleteDevice(extra.udid);
+          await waitUntilDeleted(sim, extra.udid);
+        }
       });
     });
   }

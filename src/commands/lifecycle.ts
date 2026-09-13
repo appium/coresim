@@ -18,6 +18,7 @@ declare module '../native-simctl.js' {
     getBootStatus(udid: string): Promise<SimBootInfo | null>;
     waitForBoot(udid: string, options?: {timeoutMs?: number}): Promise<void>;
     shutdownDevice(udid: string): Promise<void>;
+    shutdownAllDevices(): Promise<void>;
     eraseDevice(udid: string): Promise<void>;
   }
 }
@@ -167,6 +168,24 @@ export async function waitForBoot(this: NativeSimctl, udid: string, options: {ti
  */
 export async function shutdownDevice(this: NativeSimctl, udid: string): Promise<void> {
   return runCatchingAsync(async () => (await this._findDevice(udid)).shutdown());
+}
+
+/**
+ * Best-effort shutdown of every device in the default device set that isn't already `Shutdown` —
+ * the native equivalent of `xcrun simctl shutdown all`. A fan-out over {@link shutdownDevice}
+ * rather than `SimDeviceSet`'s own bulk method, whose completion-block signature couldn't be
+ * confirmed safely (see commit message). Per-device failures are swallowed.
+ */
+export async function shutdownAllDevices(this: NativeSimctl): Promise<void> {
+  return runCatchingAsync(async () => {
+    const deviceSet = await this._deviceSet();
+    const devices = await deviceSet.devices();
+    await Promise.all(
+      devices
+        .filter((device) => device.state() !== SimDeviceState.Shutdown)
+        .map((device) => device.shutdown().catch(() => {})),
+    );
+  });
 }
 
 /**

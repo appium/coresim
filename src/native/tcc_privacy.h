@@ -16,4 +16,20 @@ BOOL SetTCCAccess(NSString* dataPath, NSString* service, NSString* bundleId, BOO
 // by deleting its row from TCC.db, if one exists.
 BOOL ResetTCCAccess(NSString* dataPath, NSString* service, NSString* bundleId, NSError** error);
 
+// Own status codes GetTCCAccess reports through `outStatus` — deliberately not TCC's own raw wire
+// values (which reuse 0 for "denied", not "no row"), so a missing row and an explicit denial are
+// never confusable. `kTCCAuthLimited` only ever occurs for kTCCServicePhotos's "selected photos"
+// grant — SetTCCAccess never writes it, but a row can still carry it if something else did.
+enum TCCAuthStatus {
+  kTCCAuthNotDetermined = 0,
+  kTCCAuthDenied,
+  kTCCAuthGranted,
+  kTCCAuthLimited,
+};
+
+// Reads TCC.db for the current authorization status of (service, bundleId), translating either
+// schema (see HasAuthValueColumn in the .mm) into the TCCAuthStatus values above. Fails with the
+// same descriptive NSError as SetTCCAccess if the device has never been booted (no TCC.db yet).
+BOOL GetTCCAccess(NSString* dataPath, NSString* service, NSString* bundleId, TCCAuthStatus* outStatus, NSError** error);
+
 }  // namespace coresim
