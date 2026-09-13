@@ -1,0 +1,41 @@
+name: Release
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  id-token: write # to enable use of OIDC for trusted publishing and npm provenance
+
+jobs:
+  prebuild:
+    uses: ./.github/workflows/prebuild.yml
+
+  build:
+    needs: prebuild
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Use Node.js LTS
+        uses: actions/setup-node@v7
+        with:
+          node-version: lts/*
+          check-latest: true
+      - name: Download prebuild
+        uses: actions/download-artifact@v8
+        with:
+          name: prebuild-darwin-arm64
+          path: prebuilds
+      - run: find prebuilds -type f -name '*.node' | sort
+        name: List prebuilds
+      - run: npm install --no-package-lock
+        name: Install dependencies
+
+      - run: npx semantic-release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        name: Release

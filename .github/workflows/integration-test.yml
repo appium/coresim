@@ -1,0 +1,41 @@
+name: Integration Tests
+
+on:
+  pull_request:
+    branches: [ main ]
+
+# A new push to the same PR cancels whatever integration run is still in flight for it, instead of
+# both running to completion — real simulator boots make this suite expensive enough that letting
+# a superseded run keep going is pure waste.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        # Mirrors appium-ios-simulator's functional-test.yml matrix: pairs a real Xcode version
+        # with the oldest macOS runner image known to support it (an arm64 image — see
+        # binding.gyp), covering both ends of the Xcode/CoreSimulator versions this addon's
+        # dynamically-resolved selectors need to keep working across.
+        include:
+        - xcodeVersion: '26.4'
+          platform: macos-26
+        - xcodeVersion: '16.4'
+          platform: macos-15
+    uses: ./.github/workflows/shared.yml
+    with:
+      platform: ${{ matrix.platform }}
+      xcode-version: ${{ matrix.xcodeVersion }}
+      node-version: lts/*
+      test-command: npm run test:integration
+      test-name: Integration tests (Xcode ${{ matrix.xcodeVersion }})
+      # Cheap to run per Xcode version here (no simulator boot involved) and gives warnings-as-
+      # errors coverage across the same Xcode/CoreSimulator versions the functional tests cover.
+      run-xcodebuild-check: true
+      # Real simulator boot/create/delete on a CI runner is far slower than on real hardware —
+      # this only needs to cover ONE boot cycle per Xcode version since test/integration shares a
+      # single throwaway device across all its cases.
+      timeout-minutes: 30

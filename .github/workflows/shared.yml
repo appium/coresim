@@ -1,0 +1,113 @@
+name: Reusable native test
+
+on:
+  workflow_call:
+    inputs:
+      platform:
+        description: Runner image (must be an arm64 macOS image — see binding.gyp)
+        required: false
+        default: macos-latest
+        type: string
+      xcode-version:
+        description: Xcode version to select via maxim-lobanov/setup-xcode (empty uses the
+          runner image's default Xcode)
+        required: false
+        default: ''
+        type: string
+      node-version:
+        description: Node.js version
+        required: true
+        type: string
+      test-command:
+        description: Test command to execute
+        required: true
+        type: string
+      test-name:
+        description: Human-readable test name
+        required: true
+        type: string
+      run-lint:
+        description: Run lint before tests
+        required: false
+        default: false
+        type: boolean
+      run-format-check:
+        description: Run format check before tests
+        required: false
+        default: false
+        type: boolean
+      run-cpp-format-check:
+        description: Run C++ format check (clang-format) before tests
+        required: false
+        default: false
+        type: boolean
+      run-xcodebuild-check:
+        description: Rebuild the native addon via xcodebuild with warnings-as-errors before tests
+        required: false
+        default: false
+        type: boolean
+      timeout-minutes:
+        description: Job-level timeout backstop — real simulator boot on a CI runner is far
+          slower than on real hardware, so integration callers should raise this well above the
+          default.
+        required: false
+        default: 15
+        type: number
+
+jobs:
+  test:
+    # macOS arm64 only — CoreSimulator.framework doesn't exist anywhere else (see binding.gyp).
+    # Every input.platform value callers pass must be an arm64-hosted macOS image
+    # (macos-latest/macos-15/macos-26, ...); this is a CI-testing constraint, not an install-time
+    # one — package.json has no "os"/"cpu" restriction, see scripts/install.mjs.
+    runs-on: ${{ inputs.platform }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    env:
+      # GitHub Actions already sets this by default; set explicitly so test code (which branches
+      # on process.env.CI to share one booted simulator across tests instead of booting a fresh
+      # one per test) doesn't depend on that default staying true.
+      CI: true
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Use Node.js ${{ inputs.node-version }}
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ inputs.node-version }}
+
+      - name: Select Xcode ${{ inputs.xcode-version }}
+        if: ${{ inputs.xcode-version != '' }}
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: ${{ inputs.xcode-version }}
+
+      - name: Install npm dependencies
+        run: npm install
+
+      - name: Run linter
+        if: ${{ inputs.run-lint }}
+        run: npm run lint
+
+      - name: Run format check
+        if: ${{ inputs.run-format-check }}
+        run: npm run format:check
+
+      - name: Install clang-format
+        if: ${{ inputs.run-cpp-format-check }}
+        run: brew install clang-format
+
+      - name: Run C++ format check
+        if: ${{ inputs.run-cpp-format-check }}
+        run: npm run format:cpp:check
+
+      - name: Rebuild native addon via xcodebuild (warnings as errors)
+        if: ${{ inputs.run-xcodebuild-check }}
+        run: npm run build:addon:xcodebuild
+
+      - name: Show selected Xcode and available simulator runtimes
+        run: |
+          xcodebuild -version
+          xcrun simctl list runtimes
+
+      - name: Run ${{ inputs.test-name }}
+        run: ${{ inputs.test-command }}

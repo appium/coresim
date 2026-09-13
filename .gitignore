@@ -141,3 +141,19 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+
+# TypeScript build output
+lib/
+
+# Native addon build output (prebuilds are produced in CI before publish; do not commit)
+build/
+prebuilds/
+compile_commands.json
+
+.DS_Store
+.idea
+.vscode-test
+
+# Downloaded on first integration test run (see test/fixtures.ts) — never committed.
+test/fixtures/*.app
+
