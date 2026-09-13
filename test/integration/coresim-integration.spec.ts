@@ -412,7 +412,16 @@ describe('NativeSimctl integration', () => {
             SimDeviceState.Shutdown,
           );
         } finally {
+          // Mirrors the outer after() hook above: an earlier failure (boot, waitForBoot, the
+          // assertion) can leave `extra` still Booted, and shutdownDevice() on an already-Shutdown
+          // device rejects rather than no-oping — checking first keeps that from masking the real
+          // failure. deleteDevice's removal is async (see waitUntilDeleted), so poll for it too.
+          const current = (await sim.getDevices()).find((d) => d.udid === extra.udid);
+          if (current?.state === SimDeviceState.Booted) {
+            await sim.shutdownDevice(extra.udid);
+          }
           await sim.deleteDevice(extra.udid);
+          await waitUntilDeleted(sim, extra.udid);
         }
       });
     });
