@@ -9,7 +9,14 @@ import {after, before, describe, it} from 'node:test';
 import {waitForCondition} from 'asyncbox';
 
 import {NativeSimctl, SimDeviceState, type SimDeviceInfo} from '../../src/index.js';
-import {getUIKitCatalogPath, UICATALOG_BUNDLE_ID} from '../fixtures.js';
+import {
+  createSelfSignedCert,
+  createTestPhoto,
+  createTestVideo,
+  getUIKitCatalogPath,
+  HAS_FFMPEG,
+  UICATALOG_BUNDLE_ID,
+} from '../fixtures.js';
 
 // GitHub Actions sets this for every job. Spawning a process through CoreSimulator's own launch
 // mechanism has been observed, intermittently and on more than one Xcode/macOS matrix leg, to
@@ -40,66 +47,9 @@ async function waitUntilDeleted(sim: NativeSimctl, udid: string): Promise<void> 
   });
 }
 
-/** A throwaway self-signed cert for addCertificate/addRootCertificate — content doesn't matter. */
-function createSelfSignedCert(): string {
-  const certPath = path.join(os.tmpdir(), `coresim-test-cert-${Date.now()}-${process.pid}.pem`);
-  execFileSync('openssl', [
-    'req',
-    '-x509',
-    '-newkey',
-    'rsa:2048',
-    '-keyout',
-    '/dev/null',
-    '-out',
-    certPath,
-    '-days',
-    '1',
-    '-nodes',
-    '-subj',
-    '/CN=coresim-test',
-  ]);
-  return certPath;
-}
-
 /** iOS-only checks (app install, openUrl) need a real browser/app-install surface tvOS/watchOS/visionOS don't have. */
 function isIOSRuntime(runtimeIdentifier: string): boolean {
   return runtimeIdentifier.includes('.SimRuntime.iOS-');
-}
-
-// The smallest possible valid PNG (a single black pixel) — good enough for addMedia/addPhoto,
-// which only need a file CoreSimulator's own type-sniffing recognizes as an image.
-const ONE_PIXEL_PNG_BASE64 =
-  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
-
-function createTestPhoto(): string {
-  const photoPath = path.join(os.tmpdir(), `coresim-test-photo-${Date.now()}-${process.pid}.png`);
-  fs.writeFileSync(photoPath, Buffer.from(ONE_PIXEL_PNG_BASE64, 'base64'));
-  return photoPath;
-}
-
-const HAS_FFMPEG = (() => {
-  try {
-    execFileSync('ffmpeg', ['-version'], {stdio: 'ignore'});
-    return true;
-  } catch {
-    return false;
-  }
-})();
-
-/** A trivial 1-frame video, via ffmpeg — skipped in whatever environment doesn't have it installed. */
-function createTestVideo(): string {
-  const videoPath = path.join(os.tmpdir(), `coresim-test-video-${Date.now()}-${process.pid}.mp4`);
-  execFileSync('ffmpeg', [
-    '-y',
-    '-f',
-    'lavfi',
-    '-i',
-    'color=c=black:s=32x32:d=0.1',
-    '-frames:v',
-    '1',
-    videoPath,
-  ]);
-  return videoPath;
 }
 
 /**

@@ -1,3 +1,6 @@
+import {execFileSync} from 'node:child_process';
+import nodeFs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 import {fs, net, tempDir, zip} from '@appium/support';
@@ -55,4 +58,62 @@ export async function getUIKitCatalogPath(): Promise<string> {
   } finally {
     downloadPromise = undefined;
   }
+}
+
+/** A throwaway self-signed cert for addCertificate/addRootCertificate — content doesn't matter. */
+export function createSelfSignedCert(): string {
+  const certPath = path.join(os.tmpdir(), `coresim-test-cert-${Date.now()}-${process.pid}.pem`);
+  execFileSync('openssl', [
+    'req',
+    '-x509',
+    '-newkey',
+    'rsa:2048',
+    '-keyout',
+    '/dev/null',
+    '-out',
+    certPath,
+    '-days',
+    '1',
+    '-nodes',
+    '-subj',
+    '/CN=coresim-test',
+  ]);
+  return certPath;
+}
+
+// The smallest possible valid PNG (a single black pixel) — good enough for addMedia/addPhoto,
+// which only need a file CoreSimulator's own type-sniffing recognizes as an image.
+const ONE_PIXEL_PNG_BASE64 =
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
+
+/** A throwaway 1x1 test image for addMedia/addPhoto — content doesn't matter. */
+export function createTestPhoto(): string {
+  const photoPath = path.join(os.tmpdir(), `coresim-test-photo-${Date.now()}-${process.pid}.png`);
+  nodeFs.writeFileSync(photoPath, Buffer.from(ONE_PIXEL_PNG_BASE64, 'base64'));
+  return photoPath;
+}
+
+export const HAS_FFMPEG = (() => {
+  try {
+    execFileSync('ffmpeg', ['-version'], {stdio: 'ignore'});
+    return true;
+  } catch {
+    return false;
+  }
+})();
+
+/** A trivial 1-frame test video for addMedia/addVideo, via ffmpeg — see {@link HAS_FFMPEG}. */
+export function createTestVideo(): string {
+  const videoPath = path.join(os.tmpdir(), `coresim-test-video-${Date.now()}-${process.pid}.mp4`);
+  execFileSync('ffmpeg', [
+    '-y',
+    '-f',
+    'lavfi',
+    '-i',
+    'color=c=black:s=32x32:d=0.1',
+    '-frames:v',
+    '1',
+    videoPath,
+  ]);
+  return videoPath;
 }
