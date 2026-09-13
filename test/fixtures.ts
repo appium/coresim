@@ -107,6 +107,15 @@ export async function hasFfmpeg(): Promise<boolean> {
 /** A trivial 1-frame test video for addMedia/addVideo, via ffmpeg — see {@link hasFfmpeg}. */
 export async function createTestVideo(): Promise<string> {
   const videoPath = path.join(os.tmpdir(), `coresim-test-video-${Date.now()}-${process.pid}.mp4`);
-  await execFileAsync('ffmpeg', ['-y', '-f', 'lavfi', '-i', 'color=c=black:s=32x32:d=0.1', '-frames:v', '1', videoPath]);
+  await execFileAsync('ffmpeg', [
+    '-y',
+    '-f',
+    'lavfi',
+    '-i',
+    'color=c=black:s=32x32:d=0.1',
+    '-frames:v',
+    '1',
+    videoPath,
+  ]);
   return videoPath;
 }
