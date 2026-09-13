@@ -21,7 +21,7 @@ export const UICATALOG_BUNDLE_ID = 'com.example.apple-samplecode.UICatalog';
 // Resolved from the package root (like getPkgRoot()'s own callers elsewhere), not import.meta.url
 // — this file is compiled to lib/test/fixtures.js, and caching relative to that would put the
 // download under lib/ instead of the source tree's (gitignored) test/fixtures/.
-const UICATALOG_CACHE_PATH = path.join(getPkgRoot(), 'test/fixtures/UIKitCatalog-iphonesimulator.app');
+const UICATALOG_CACHE_PATH = path.join(getPkgRoot(), 'test', 'fixtures', 'UIKitCatalog-iphonesimulator.app');
 
 let downloadPromise: Promise<string> | undefined;
 

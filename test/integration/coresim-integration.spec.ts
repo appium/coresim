@@ -61,7 +61,18 @@ function isIOSRuntime(runtimeIdentifier: string): boolean {
  * after resetPermission)
  */
 function readTCCGranted(udid: string, tccService: string, bundleId: string): boolean | undefined {
-  const dbPath = path.join(os.homedir(), 'Library/Developer/CoreSimulator/Devices', udid, 'data/Library/TCC/TCC.db');
+  const dbPath = path.join(
+    os.homedir(),
+    'Library',
+    'Developer',
+    'CoreSimulator',
+    'Devices',
+    udid,
+    'data',
+    'Library',
+    'TCC',
+    'TCC.db',
+  );
   const query = (sql: string) =>
     Number(execFileSync('sqlite3', ['-line', dbPath, sql], {encoding: 'utf8'}).split('=')[1]?.trim() ?? '0');
   const rowExists =
