@@ -26,6 +26,7 @@
 #include "native/objc_runtime.h"
 #include "native/sim_device.h"
 #include "native/sim_device_set.h"
+#include "native/sim_pasteboard.h"
 #include "native/sim_service_context.h"
 #include "native/tcc_privacy.h"
 #include "native/value_bridge.h"
@@ -558,6 +559,30 @@ class NativeDevice : public Napi::ObjectWrap<NativeDevice> {
     });
   }
 
+  Napi::Value GetPasteboard(const Napi::CallbackInfo& info) {
+    id device = device_;
+    return RunAsync<NSString*>(
+        info.Env(),
+        [device]() -> NSString* {
+          NSError* error = nil;
+          NSString* result = coresim::PullPasteboardString(device, &error);
+          ThrowIfFailed(result != nil, error);
+          return result;
+        },
+        [](Napi::Env env, NSString* result) -> Napi::Value {
+          return Napi::String::New(env, result ? result.UTF8String : "");
+        });
+  }
+
+  Napi::Value SetPasteboard(const Napi::CallbackInfo& info) {
+    id device = device_;
+    NSString* content = @(info[0].As<Napi::String>().Utf8Value().c_str());
+    return RunAsyncVoid(info.Env(), [device, content]() {
+      NSError* error = nil;
+      ThrowIfFailed(coresim::PushPasteboardString(device, content, &error), error);
+    });
+  }
+
   // Option dictionary keys for `spawnWithPath:options:...` aren't part of the ObjC runtime
   // metadata this addon resolves selectors from (they're string literals inside CoreSimulator's
   // own implementation) — confirmed by resolving each `SimDeviceSpawnKey*` symbol at runtime via
@@ -721,6 +746,8 @@ void NativeDevice::Init(Napi::Env env) {
                       InstanceMethod<&NativeDevice::AddMedia>("addMedia"),
                       InstanceMethod<&NativeDevice::AddPhoto>("addPhoto"),
                       InstanceMethod<&NativeDevice::AddVideo>("addVideo"),
+                      InstanceMethod<&NativeDevice::GetPasteboard>("getPasteboard"),
+                      InstanceMethod<&NativeDevice::SetPasteboard>("setPasteboard"),
                       InstanceMethod<&NativeDevice::Spawn>("spawn"),
                   });
   env.GetInstanceData<AddonInstanceData>()->deviceConstructor = Napi::Persistent(ctor);

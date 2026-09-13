@@ -231,6 +231,8 @@ export interface NativeDeviceHandle {
   addMedia(filePaths: string[]): Promise<void>;
   addPhoto(filePath: string): Promise<void>;
   addVideo(filePath: string): Promise<void>;
+  getPasteboard(): Promise<string>;
+  setPasteboard(content: string): Promise<void>;
   spawn(path: string, options: SpawnOptions | undefined, onExit: NativeSpawnExitCallback): Promise<NativeSpawnResult>;
 }
 

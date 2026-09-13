@@ -33,6 +33,7 @@ import {
   waitForBoot,
 } from './commands/lifecycle.js';
 import {addMedia, addPhoto, addVideo} from './commands/media.js';
+import {getPasteboard, setPasteboard} from './commands/pasteboard.js';
 import {getPermission, grantPermission, resetPermission, revokePermission} from './commands/permissions.js';
 import {spawnProcess} from './commands/spawn.js';
 import {
@@ -53,6 +54,7 @@ import './commands/interaction.js';
 import './commands/keychain.js';
 import './commands/lifecycle.js';
 import './commands/media.js';
+import './commands/pasteboard.js';
 import './commands/permissions.js';
 import './commands/spawn.js';
 import './commands/ui.js';
@@ -201,6 +203,10 @@ Object.assign(NativeSimctl.prototype, {
   getDarwinNotificationState,
   setDarwinNotificationState,
   postDarwinNotification,
+
+  // pasteboard
+  getPasteboard,
+  setPasteboard,
 
   // spawn
   spawnProcess,

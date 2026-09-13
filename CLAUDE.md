@@ -95,6 +95,8 @@ toolchain (`make` and `xcodebuild`).
 - **Several CoreSimulator operations reject if the device isn't in the exact state they expect**
   (e.g. erasing requires `Shutdown`; shutting down an already-`Shutdown` device also rejects) rather
   than being idempotent no-ops — callers need to check state first.
+- **Pasteboard sync (`getPasteboard`/`setPasteboard`) needs no special entitlement** — see
+  `sim_pasteboard.mm` for the two private mechanisms it picks between and how.
 
 ## Known gaps
 

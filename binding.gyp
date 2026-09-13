@@ -10,7 +10,8 @@
         "src/native/sim_service_context.mm",
         "src/native/sim_device_set.mm",
         "src/native/sim_device.mm",
-        "src/native/tcc_privacy.mm"
+        "src/native/tcc_privacy.mm",
+        "src/native/sim_pasteboard.mm"
       ],
       "include_dirs": [
         "<!@(node -p \"require('node-addon-api').include\")"
@@ -36,7 +37,7 @@
           "-Wno-unused-parameter"
         ],
         "OTHER_CPLUSPLUSFLAGS": ["-O3", "-fPIC", "-fobjc-arc"],
-        "OTHER_LDFLAGS": ["-framework", "Foundation", "-lsqlite3"]
+        "OTHER_LDFLAGS": ["-framework", "Foundation", "-framework", "AppKit", "-lsqlite3"]
       }
     }
   ]
