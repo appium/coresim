@@ -14,7 +14,7 @@ import {
   createTestPhoto,
   createTestVideo,
   getUIKitCatalogPath,
-  HAS_FFMPEG,
+  hasFfmpeg,
   UICATALOG_BUNDLE_ID,
 } from '../fixtures.js';
 
@@ -116,7 +116,7 @@ const fixtures = await availableRuntimeFixtures(sim);
 const targets = fixtures.slice(0, 1);
 // One throwaway cert shared across every runtime's keychain checks — its content is irrelevant,
 // so there's no reason to mint a fresh one per runtime.
-const certPath = createSelfSignedCert();
+const certPath = await createSelfSignedCert();
 
 /**
  * Mutating coverage against the real CoreSimulator device set, run against one throwaway device
@@ -273,10 +273,10 @@ describe('NativeSimctl integration', () => {
           await fs.promises.rm(photoPath, {force: true});
         }
 
-        if (!HAS_FFMPEG) {
+        if (!(await hasFfmpeg())) {
           return;
         }
-        const videoPath = createTestVideo();
+        const videoPath = await createTestVideo();
         try {
           await sim.addVideo(device!.udid, videoPath);
         } finally {

@@ -1,9 +1,12 @@
-import {execFileSync} from 'node:child_process';
+import {execFile} from 'node:child_process';
 import nodeFs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import {promisify} from 'node:util';
 
 import {fs, net, tempDir, zip} from '@appium/support';
+
+const execFileAsync = promisify(execFile);
 
 import {getPkgRoot} from '../src/utils/index.js';
 
@@ -61,9 +64,9 @@ export async function getUIKitCatalogPath(): Promise<string> {
 }
 
 /** A throwaway self-signed cert for addCertificate/addRootCertificate — content doesn't matter. */
-export function createSelfSignedCert(): string {
+export async function createSelfSignedCert(): Promise<string> {
   const certPath = path.join(os.tmpdir(), `coresim-test-cert-${Date.now()}-${process.pid}.pem`);
-  execFileSync('openssl', [
+  await execFileAsync('openssl', [
     'req',
     '-x509',
     '-newkey',
@@ -93,27 +96,18 @@ export function createTestPhoto(): string {
   return photoPath;
 }
 
-export const HAS_FFMPEG = (() => {
+export async function hasFfmpeg(): Promise<boolean> {
   try {
-    execFileSync('ffmpeg', ['-version'], {stdio: 'ignore'});
+    await execFileAsync('ffmpeg', ['-version']);
     return true;
   } catch {
     return false;
   }
-})();
+}
 
-/** A trivial 1-frame test video for addMedia/addVideo, via ffmpeg — see {@link HAS_FFMPEG}. */
-export function createTestVideo(): string {
+/** A trivial 1-frame test video for addMedia/addVideo, via ffmpeg — see {@link hasFfmpeg}. */
+export async function createTestVideo(): Promise<string> {
   const videoPath = path.join(os.tmpdir(), `coresim-test-video-${Date.now()}-${process.pid}.mp4`);
-  execFileSync('ffmpeg', [
-    '-y',
-    '-f',
-    'lavfi',
-    '-i',
-    'color=c=black:s=32x32:d=0.1',
-    '-frames:v',
-    '1',
-    videoPath,
-  ]);
+  await execFileAsync('ffmpeg', ['-y', '-f', 'lavfi', '-i', 'color=c=black:s=32x32:d=0.1', '-frames:v', '1', videoPath]);
   return videoPath;
 }
