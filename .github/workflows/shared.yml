@@ -4,9 +4,7 @@ on:
   workflow_call:
     inputs:
       platform:
-        description: Runner image. Any Xcode/native-addon step (xcode-version, run-cpp-format-check,
-          run-xcodebuild-check) requires an arm64 macOS image (see binding.gyp); plain
-          test-command-only callers (e.g. unit tests) may also pass an ubuntu image.
+        description: Runner image (must be an arm64 macOS image — see binding.gyp)
         required: false
         default: macos-latest
         type: string
@@ -58,9 +56,10 @@ on:
 
 jobs:
   test:
-    # inputs.platform is macOS for anything that touches CoreSimulator.framework or Xcode (install
-    # skips the native addon build off macOS — see scripts/install.mjs — so plain test-command-only
-    # callers like unit tests may pass an ubuntu image instead).
+    # macOS arm64 only — CoreSimulator.framework doesn't exist anywhere else (see binding.gyp).
+    # Every input.platform value callers pass must be an arm64-hosted macOS image
+    # (macos-latest/macos-15/macos-26, ...); this is a CI-testing constraint, not an install-time
+    # one — package.json has no "os"/"cpu" restriction, see scripts/install.mjs.
     runs-on: ${{ inputs.platform }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     env:
@@ -106,7 +105,6 @@ jobs:
         run: npm run build:addon:xcodebuild
 
       - name: Show selected Xcode and available simulator runtimes
-        if: ${{ runner.os == 'macOS' }}
         run: |
           xcodebuild -version
           xcrun simctl list runtimes

@@ -16,8 +16,6 @@ jobs:
     with:
       upload-artifacts: false
 
-  # test:unit needs no simulator/native addon (see scripts/install.mjs), so it runs on Ubuntu
-  # across the full Node LTS matrix rather than tying up macOS runners for it.
   test:
     needs:
       - node_matrix
@@ -28,22 +26,10 @@ jobs:
         node-version: ${{ fromJSON(needs.node_matrix.outputs.versions) }}
     uses: ./.github/workflows/shared.yml
     with:
-      platform: ubuntu-latest
       node-version: ${{ matrix.node-version }}
       test-command: npm run test:unit
       test-name: Unit tests
       run-lint: true
       run-format-check: true
-
-  # The native-addon checks need real Xcode/clang-format, so they stay on macOS and run once
-  # rather than once per Node version in the matrix above.
-  native-checks:
-    needs:
-      - prebuild
-    uses: ./.github/workflows/shared.yml
-    with:
-      node-version: lts/*
-      test-command: "true"
-      test-name: Native addon checks
       run-cpp-format-check: true
       run-xcodebuild-check: true
