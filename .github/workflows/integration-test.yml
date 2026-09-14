@@ -19,8 +19,11 @@ jobs:
         # Mirrors appium-ios-simulator's functional-test.yml matrix: pairs a real Xcode version
         # with the oldest macOS runner image known to support it (an arm64 image — see
         # binding.gyp), covering both ends of the Xcode/CoreSimulator versions this addon's
-        # dynamically-resolved selectors need to keep working across.
+        # dynamically-resolved selectors need to keep working across, plus the upcoming beta to
+        # catch breakage before it ships stable.
         include:
+        - xcodeVersion: '27.0 beta'
+          platform: macos-26
         - xcodeVersion: '26.4'
           platform: macos-26
         - xcodeVersion: '16.4'
