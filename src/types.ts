@@ -99,6 +99,35 @@ export type SimPermissionService =
   | 'speech';
 
 /**
+ * A device's renderable display, as returned by `NativeSimctl.getDisplays()`.
+ */
+export interface SimDisplayInfo {
+  /** Port UUID identifying this display — pass as `getScreenshot`'s `displayId` option to target it. */
+  id: string;
+  /** Raw `SimDisplayDescriptorState.displayClass` — 0 is always the primary display. */
+  displayClass: number;
+  /** Whether this is the primary display (`displayClass === 0`). */
+  isMain: boolean;
+}
+
+/** Options for `NativeSimctl.getScreenshot`. */
+export interface ScreenshotOptions {
+  /** Image encoding — defaults to `'png'`. */
+  format?: 'png' | 'jpeg';
+  /**
+   * Which display to capture, by `id` from `getDisplays()`. Defaults to the primary display
+   * (falling back to the first renderable display if none is primary, e.g. tvOS).
+   */
+  displayId?: string;
+  /**
+   * JPEG quality as a percentage (0 = smallest/most compressed, 100 = largest/least compressed).
+   * Only meaningful with `format: 'jpeg'` — ignored for `'png'`, which is always lossless.
+   * Defaults to ImageIO's own default (near-lossless) when omitted.
+   */
+  quality?: number;
+}
+
+/**
  * Options for `NativeSimctl.spawnProcess`, passed through to CoreSimulator's
  * `spawnWithPath:options:terminationQueue:terminationHandler:error:`. Only keys confirmed
  * empirically (see CLAUDE.md) are typed here. CoreSimulator also recognizes
@@ -233,6 +262,8 @@ export interface NativeDeviceHandle {
   addVideo(filePath: string): Promise<void>;
   getPasteboard(): Promise<string>;
   setPasteboard(content: string): Promise<void>;
+  screenshot(options?: {format?: 'png' | 'jpeg'; displayId?: string; quality?: number}): Promise<Buffer>;
+  getDisplays(): Promise<SimDisplayInfo[]>;
   spawn(path: string, options: SpawnOptions | undefined, onExit: NativeSpawnExitCallback): Promise<NativeSpawnResult>;
 }
 

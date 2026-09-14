@@ -35,6 +35,7 @@ import {
 import {addMedia, addPhoto, addVideo} from './commands/media.js';
 import {getPasteboard, setPasteboard} from './commands/pasteboard.js';
 import {getPermission, grantPermission, resetPermission, revokePermission} from './commands/permissions.js';
+import {getDisplays, getScreenshot} from './commands/screenshot.js';
 import {spawnProcess} from './commands/spawn.js';
 import {
   getAppearance,
@@ -56,6 +57,7 @@ import './commands/lifecycle.js';
 import './commands/media.js';
 import './commands/pasteboard.js';
 import './commands/permissions.js';
+import './commands/screenshot.js';
 import './commands/spawn.js';
 import './commands/ui.js';
 import {NativeSimUnavailableError} from './errors.js';
@@ -207,6 +209,10 @@ Object.assign(NativeSimctl.prototype, {
   // pasteboard
   getPasteboard,
   setPasteboard,
+
+  // screenshot
+  getScreenshot,
+  getDisplays,
 
   // spawn
   spawnProcess,

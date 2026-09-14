@@ -97,11 +97,13 @@ toolchain (`make` and `xcodebuild`).
   than being idempotent no-ops — callers need to check state first.
 - **Pasteboard sync (`getPasteboard`/`setPasteboard`) needs no special entitlement** — see
   `sim_pasteboard.mm` for the two private mechanisms it picks between and how.
+- **Screenshot capture (`getScreenshot`) reads the device's live framebuffer `IOSurface` in-process**
+  — no entitlement, no temp file, no `simctl` subprocess — see `sim_screenshot.mm` for how the main
+  display's IO port is found and rendered to PNG.
 
 ## Known gaps
 
 - No handling of a CoreSimulator/Xcode version mismatch requiring an upgrade (the way `simctl`'s own
   wrapper does).
 - `spawnProcess` has no writable `stdin`.
-- No screenshot capture, bulk shutdown-all, TCC permission *state reading*, or WebInspector socket
-  discovery yet.
+- No WebInspector socket discovery yet.

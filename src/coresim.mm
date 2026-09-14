@@ -27,6 +27,7 @@
 #include "native/sim_device.h"
 #include "native/sim_device_set.h"
 #include "native/sim_pasteboard.h"
+#include "native/sim_screenshot.h"
 #include "native/sim_service_context.h"
 #include "native/tcc_privacy.h"
 #include "native/value_bridge.h"
@@ -583,6 +584,54 @@ class NativeDevice : public Napi::ObjectWrap<NativeDevice> {
     });
   }
 
+  // `format`/`displayId`/`quality` are this addon's own options, not a CoreSimulator options
+  // dictionary — the TS layer (commands/screenshot.ts) already constrains `format` to
+  // 'png'/'jpeg' and `quality` to a finite 0-100, so anything else (including absent) is just
+  // defaulted here rather than validated again.
+  Napi::Value Screenshot(const Napi::CallbackInfo& info) {
+    id device = device_;
+    coresim::ScreenshotFormat format = coresim::ScreenshotFormat::kPNG;
+    NSString* displayId = nil;
+    NSNumber* jpegQualityPercent = nil;
+    if (info.Length() > 0 && info[0].IsObject()) {
+      Napi::Object options = info[0].As<Napi::Object>();
+      if (options.Has("format") && options.Get("format").IsString() &&
+          options.Get("format").As<Napi::String>().Utf8Value() == "jpeg") {
+        format = coresim::ScreenshotFormat::kJPEG;
+      }
+      if (options.Has("displayId") && options.Get("displayId").IsString()) {
+        displayId = @(options.Get("displayId").As<Napi::String>().Utf8Value().c_str());
+      }
+      if (options.Has("quality") && options.Get("quality").IsNumber()) {
+        jpegQualityPercent = @(options.Get("quality").As<Napi::Number>().DoubleValue());
+      }
+    }
+    return RunAsync<NSData*>(
+        info.Env(),
+        [device, displayId, format, jpegQualityPercent]() -> NSData* {
+          NSError* error = nil;
+          NSData* result = coresim::CaptureScreenshot(device, displayId, format, jpegQualityPercent, &error);
+          ThrowIfFailed(result != nil, error);
+          return result;
+        },
+        [](Napi::Env env, NSData* result) -> Napi::Value {
+          return Napi::Buffer<uint8_t>::Copy(env, static_cast<const uint8_t*>(result.bytes), result.length);
+        });
+  }
+
+  Napi::Value GetDisplays(const Napi::CallbackInfo& info) {
+    id device = device_;
+    return RunAsync<NSArray*>(
+        info.Env(),
+        [device]() -> NSArray* {
+          NSError* error = nil;
+          NSArray* result = coresim::ListDisplays(device, &error);
+          ThrowIfFailed(result != nil, error);
+          return result;
+        },
+        [](Napi::Env env, NSArray* result) -> Napi::Value { return NSObjectToJsValue(env, result); });
+  }
+
   // Option dictionary keys for `spawnWithPath:options:...` aren't part of the ObjC runtime
   // metadata this addon resolves selectors from (they're string literals inside CoreSimulator's
   // own implementation) — confirmed by resolving each `SimDeviceSpawnKey*` symbol at runtime via
@@ -748,6 +797,8 @@ void NativeDevice::Init(Napi::Env env) {
                       InstanceMethod<&NativeDevice::AddVideo>("addVideo"),
                       InstanceMethod<&NativeDevice::GetPasteboard>("getPasteboard"),
                       InstanceMethod<&NativeDevice::SetPasteboard>("setPasteboard"),
+                      InstanceMethod<&NativeDevice::Screenshot>("screenshot"),
+                      InstanceMethod<&NativeDevice::GetDisplays>("getDisplays"),
                       InstanceMethod<&NativeDevice::Spawn>("spawn"),
                   });
   env.GetInstanceData<AddonInstanceData>()->deviceConstructor = Napi::Persistent(ctor);
