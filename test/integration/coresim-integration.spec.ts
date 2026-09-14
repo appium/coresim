@@ -326,9 +326,12 @@ describe('NativeSimctl integration', () => {
         assert.deepStrictEqual(jpeg.subarray(0, 3), Buffer.from([0xff, 0xd8, 0xff]));
 
         const displays = await sim.getDisplays(device!.udid);
-        const mainDisplay = displays.find((d) => d.isMain);
-        assert.ok(mainDisplay, 'expected at least one display reporting isMain');
-        const byId = await sim.getScreenshot(device!.udid, {displayId: mainDisplay!.id});
+        // Mirrors CaptureScreenshot's own fallback (see sim_screenshot.mm): not every runtime has a
+        // displayClass-0 display (e.g. tvOS's TVOut-only setup), so falling back to the first
+        // renderable display is the correct behavior, not a bug to work around here.
+        const targetDisplay = displays.find((d) => d.isMain) ?? displays[0];
+        assert.ok(targetDisplay, 'expected at least one renderable display');
+        const byId = await sim.getScreenshot(device!.udid, {displayId: targetDisplay.id});
         assert.deepStrictEqual(byId.subarray(0, 8), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
 
         await assert.rejects(sim.getScreenshot(device!.udid, {displayId: 'not-a-real-display-id'}));
