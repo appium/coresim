@@ -8,7 +8,13 @@ import {after, before, describe, it} from 'node:test';
 
 import {waitForCondition} from 'asyncbox';
 
-import {NativeSimctl, NativeSimUnavailableError, SimDeviceState, type SimDeviceInfo} from '../../src/index.js';
+import {
+  NativeSimctl,
+  NativeSimOperationError,
+  NativeSimUnavailableError,
+  SimDeviceState,
+  type SimDeviceInfo,
+} from '../../src/index.js';
 import {
   createSelfSignedCert,
   createTestPhoto,
@@ -242,9 +248,22 @@ describe('NativeSimctl integration', () => {
         await sim.resetKeychain(device!.udid);
       });
 
-      it('delivers a simulated push notification', async () => {
-        // Confirmed to work regardless of whether the target bundle is actually installed.
-        await sim.pushNotification(device!.udid, 'com.appium.coresim.doesnotexist', {aps: {alert: 'hi'}});
+      it('delivers a simulated push notification', async (t) => {
+        // Confirmed to work regardless of whether the target bundle is actually installed — except
+        // on iOS 27 (beta), where CoreSimulator's push daemon currently rejects every target,
+        // installed and launched or not, with "Source is not authorized" (UNErrorDomain code 2003).
+        // Reproduced identically via `xcrun simctl push` directly, so this is a platform-side beta
+        // bug, not something this addon (or this test) can work around.
+        try {
+          await sim.pushNotification(device!.udid, 'com.appium.coresim.doesnotexist', {aps: {alert: 'hi'}});
+        } catch (err) {
+          if (err instanceof NativeSimOperationError && err.domain === 'UNErrorDomain' && err.code === 2003) {
+            return t.skip(
+              `iOS 27 beta: CoreSimulator's push daemon currently rejects every target ("Source is not authorized")`,
+            );
+          }
+          throw err;
+        }
       });
 
       it('grants, revokes, and resets a privacy permission, verified against the simulator TCC database', async () => {
