@@ -119,13 +119,20 @@ function toFsPath(fileUrl: unknown): string | undefined {
  * paths {@link appInfo}'s `Path`/`DataContainer`/`GroupContainers` fields already carry, just
  * picked out and normalized to a plain path (no new native call).
  *
+ * @example
+ * // Resolve a specific App Group container by its identifier (see appInfo's GroupContainers
+ * // field, or catch the error thrown below, to discover which identifiers an app has)
+ * const groupPath = await sim.getAppContainer(udid, bundleId, 'group.com.example.myapp');
+ *
  * @param udid — UDID of the (booted) device to read from
  * @param bundleId — bundle identifier of the installed app
  * @param containerType — see {@link AppContainerType}; defaults to `'app'`
  * @returns the resolved container's path
  * @throws if the requested container doesn't exist (e.g. `'data'` before the device has booted
- * once with the app installed), or if `'groups'` is ambiguous (more than one App Group container
- * — pass the specific group identifier instead)
+ * once with the app installed), if `'groups'` is ambiguous (more than one App Group container —
+ * pass the specific group identifier instead), or if a given group identifier doesn't match any
+ * of the app's App Group containers — in both of the latter cases, the error message lists the
+ * app's actual App Group identifiers
  */
 export async function getAppContainer(
   this: NativeSimctl,
@@ -168,7 +175,10 @@ export async function getAppContainer(
   }
   const path = toFsPath(groupContainers[containerType]);
   if (!path) {
-    throw new Error(`'${bundleId}' has no App Group container with identifier '${containerType}'`);
+    const available = Object.keys(groupContainers);
+    const availability =
+      available.length > 0 ? `available: ${available.join(', ')}` : 'it has no App Group containers at all';
+    throw new Error(`'${bundleId}' has no App Group container with identifier '${containerType}' — ${availability}`);
   }
   return path;
 }
