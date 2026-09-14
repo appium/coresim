@@ -318,15 +318,28 @@ describe('NativeSimctl integration', () => {
         // Exercises whichever path this runner's CoreSimulator supports (legacy or modern — see
         // CLAUDE.md) without hardcoding which; a real t.skip(), not a silent early return, if
         // neither is present.
+        const expected = 'coresim-pasteboard-test';
         try {
-          await sim.setPasteboard(device!.udid, 'coresim-pasteboard-test');
+          await sim.setPasteboard(device!.udid, expected);
         } catch (err) {
           if (err instanceof NativeSimUnavailableError) {
             return t.skip(`pasteboard sync unavailable on this CoreSimulator: ${err.message}`);
           }
           throw err;
         }
-        assert.strictEqual(await sim.getPasteboard(device!.udid), 'coresim-pasteboard-test');
+        // The modern path's push has no completion callback and only sleeps a fixed, undocumented
+        // settle margin before returning (see sim_pasteboard.mm) — poll instead of trusting a
+        // single read right after, since that margin has been observed too short on slower CI
+        // runners.
+        let actual = '';
+        await waitForCondition(
+          async () => {
+            actual = await sim.getPasteboard(device!.udid);
+            return actual === expected;
+          },
+          {waitMs: 10000, intervalMs: 500, error: `expected the device pasteboard to eventually read '${expected}'`},
+        );
+        assert.strictEqual(actual, expected);
       });
 
       if (isIOSRuntime(fixture.runtimeIdentifier)) {
