@@ -2,6 +2,7 @@ export {NativeSimError, NativeSimUnavailableError, NativeSimDispatchError, Nativ
 export {NativeSimctl} from './native-simctl.js';
 export {SpawnedProcess} from './commands/spawn.js';
 export type {AppContainerType} from './commands/app.js';
+export type {BiometricName} from './commands/biometric.js';
 export {
   SimBootStatus,
   SimDeviceState,
