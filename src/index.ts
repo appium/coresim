@@ -1,6 +1,7 @@
 export {NativeSimError, NativeSimUnavailableError, NativeSimDispatchError, NativeSimOperationError} from './errors.js';
 export {NativeSimctl} from './native-simctl.js';
 export {SpawnedProcess} from './commands/spawn.js';
+export type {AppContainerType} from './commands/app.js';
 export {
   SimBootStatus,
   SimDeviceState,

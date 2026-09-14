@@ -1,3 +1,5 @@
+import {fileURLToPath} from 'node:url';
+
 import type {NativeSimctl} from '../native-simctl.js';
 import {runCatchingAsync} from '../utils/index.js';
 
@@ -10,8 +12,16 @@ declare module '../native-simctl.js' {
     isAppInstalled(udid: string, bundleId: string): Promise<boolean>;
     appInfo(udid: string, bundleId: string): Promise<Record<string, unknown>>;
     installedApps(udid: string): Promise<Record<string, unknown>>;
+    getAppContainer(udid: string, bundleId: string, containerType?: AppContainerType | string): Promise<string>;
   }
 }
+
+/**
+ * Which of an app's on-disk containers {@link getAppContainer} should resolve — `'app'` (the
+ * `.app` bundle itself), `'data'` (its data container), `'groups'` (its sole App Group container,
+ * if it has exactly one), or any other string naming a specific App Group identifier.
+ */
+export type AppContainerType = 'app' | 'data' | 'groups';
 
 /**
  * Installs an `.app` bundle onto the given device.
@@ -94,4 +104,71 @@ export async function appInfo(this: NativeSimctl, udid: string, bundleId: string
  */
 export async function installedApps(this: NativeSimctl, udid: string): Promise<Record<string, unknown>> {
   return runCatchingAsync(async () => (await this._findDevice(udid)).installedApps());
+}
+
+/** Converts a `file://` URL string (as `appInfo`'s container fields report) to a plain fs path. */
+function toFsPath(fileUrl: unknown): string | undefined {
+  if (typeof fileUrl !== 'string') {
+    return undefined;
+  }
+  return fileURLToPath(fileUrl).replace(/\/$/, '');
+}
+
+/**
+ * Resolves the full filesystem path to one of an installed app's on-disk containers — the same
+ * paths {@link appInfo}'s `Path`/`DataContainer`/`GroupContainers` fields already carry, just
+ * picked out and normalized to a plain path (no new native call).
+ *
+ * @param udid — UDID of the (booted) device to read from
+ * @param bundleId — bundle identifier of the installed app
+ * @param containerType — see {@link AppContainerType}; defaults to `'app'`
+ * @returns the resolved container's path
+ * @throws if the requested container doesn't exist (e.g. `'data'` before the device has booted
+ * once with the app installed), or if `'groups'` is ambiguous (more than one App Group container
+ * — pass the specific group identifier instead)
+ */
+export async function getAppContainer(
+  this: NativeSimctl,
+  udid: string,
+  bundleId: string,
+  containerType: AppContainerType | string = 'app',
+): Promise<string> {
+  const info = await this.appInfo(udid, bundleId);
+  if (containerType === 'app') {
+    const path = info.Path;
+    if (typeof path !== 'string') {
+      throw new Error(`No app bundle path was reported for '${bundleId}'`);
+    }
+    return path;
+  }
+  if (containerType === 'data') {
+    const path = toFsPath(info.DataContainer);
+    if (!path) {
+      throw new Error(`No data container was found for '${bundleId}' — has the device been booted since install?`);
+    }
+    return path;
+  }
+  const groupContainers = (info.GroupContainers ?? {}) as Record<string, unknown>;
+  if (containerType === 'groups') {
+    const entries = Object.entries(groupContainers);
+    if (entries.length === 0) {
+      throw new Error(`'${bundleId}' has no App Group containers`);
+    }
+    if (entries.length > 1) {
+      throw new Error(
+        `'${bundleId}' has multiple App Group containers (${Object.keys(groupContainers).join(', ')}) — ` +
+          `specify one by its group identifier instead of 'groups'`,
+      );
+    }
+    const path = toFsPath(entries[0][1]);
+    if (!path) {
+      throw new Error(`'${bundleId}''s App Group container has no reported path`);
+    }
+    return path;
+  }
+  const path = toFsPath(groupContainers[containerType]);
+  if (!path) {
+    throw new Error(`'${bundleId}' has no App Group container with identifier '${containerType}'`);
+  }
+  return path;
 }

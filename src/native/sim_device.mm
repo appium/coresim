@@ -195,6 +195,10 @@ BOOL SetLocation(id device, double latitude, double longitude, NSError** error) 
   });
 }
 
+BOOL ClearLocation(id device, NSError** error) {
+  return BoolWithError(device, "clearSimulatedLocationWithError:", error);
+}
+
 BOOL SendPushNotification(id device, NSString* bundleID, NSDictionary* payload, NSError** error) {
   static const std::string kSelectorName = "sendPushNotificationForBundleID:jsonPayload:error:";
   RequireSelector(device, kSelectorName);
