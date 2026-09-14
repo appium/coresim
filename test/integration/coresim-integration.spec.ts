@@ -8,7 +8,13 @@ import {after, before, describe, it} from 'node:test';
 
 import {waitForCondition} from 'asyncbox';
 
-import {NativeSimctl, NativeSimUnavailableError, SimDeviceState, type SimDeviceInfo} from '../../src/index.js';
+import {
+  NativeSimctl,
+  NativeSimOperationError,
+  NativeSimUnavailableError,
+  SimDeviceState,
+  type SimDeviceInfo,
+} from '../../src/index.js';
 import {
   createSelfSignedCert,
   createTestPhoto,
@@ -242,9 +248,22 @@ describe('NativeSimctl integration', () => {
         await sim.resetKeychain(device!.udid);
       });
 
-      it('delivers a simulated push notification', async () => {
-        // Confirmed to work regardless of whether the target bundle is actually installed.
-        await sim.pushNotification(device!.udid, 'com.appium.coresim.doesnotexist', {aps: {alert: 'hi'}});
+      it('delivers a simulated push notification', async (t) => {
+        // Confirmed to work regardless of whether the target bundle is actually installed — except
+        // on iOS 27 (beta), where CoreSimulator's push daemon currently rejects every target,
+        // installed and launched or not, with "Source is not authorized" (UNErrorDomain code 2003).
+        // Reproduced identically via `xcrun simctl push` directly, so this is a platform-side beta
+        // bug, not something this addon (or this test) can work around.
+        try {
+          await sim.pushNotification(device!.udid, 'com.appium.coresim.doesnotexist', {aps: {alert: 'hi'}});
+        } catch (err) {
+          if (err instanceof NativeSimOperationError && err.domain === 'UNErrorDomain' && err.code === 2003) {
+            return t.skip(
+              `iOS 27 beta: CoreSimulator's push daemon currently rejects every target ("Source is not authorized")`,
+            );
+          }
+          throw err;
+        }
       });
 
       it('grants, revokes, and resets a privacy permission, verified against the simulator TCC database', async () => {
@@ -299,15 +318,28 @@ describe('NativeSimctl integration', () => {
         // Exercises whichever path this runner's CoreSimulator supports (legacy or modern — see
         // CLAUDE.md) without hardcoding which; a real t.skip(), not a silent early return, if
         // neither is present.
+        const expected = 'coresim-pasteboard-test';
         try {
-          await sim.setPasteboard(device!.udid, 'coresim-pasteboard-test');
+          await sim.setPasteboard(device!.udid, expected);
         } catch (err) {
           if (err instanceof NativeSimUnavailableError) {
             return t.skip(`pasteboard sync unavailable on this CoreSimulator: ${err.message}`);
           }
           throw err;
         }
-        assert.strictEqual(await sim.getPasteboard(device!.udid), 'coresim-pasteboard-test');
+        // The modern path's push has no completion callback and only sleeps a fixed, undocumented
+        // settle margin before returning (see sim_pasteboard.mm) — poll instead of trusting a
+        // single read right after, since that margin has been observed too short on slower CI
+        // runners.
+        let actual = '';
+        await waitForCondition(
+          async () => {
+            actual = await sim.getPasteboard(device!.udid);
+            return actual === expected;
+          },
+          {waitMs: 10000, intervalMs: 500, error: `expected the device pasteboard to eventually read '${expected}'`},
+        );
+        assert.strictEqual(actual, expected);
       });
 
       it('captures a screenshot of the booted device (PNG default, JPEG, and by displayId)', async (t) => {
