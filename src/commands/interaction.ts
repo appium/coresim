@@ -7,6 +7,7 @@ declare module '../native-simctl.js' {
     getEnv(udid: string, name: string): Promise<string>;
     openUrl(udid: string, url: string): Promise<void>;
     setLocation(udid: string, latitude: number, longitude: number): Promise<void>;
+    clearLocation(udid: string): Promise<void>;
     pushNotification(udid: string, bundleId: string, payload: PushNotificationPayload): Promise<void>;
   }
 }
@@ -44,6 +45,16 @@ export async function setLocation(
   longitude: number,
 ): Promise<void> {
   return runCatchingAsync(async () => (await this._findDevice(udid)).setLocation(latitude, longitude));
+}
+
+/**
+ * Stops simulating a GPS location previously set via {@link setLocation}, reverting the device to
+ * its default (no simulated location) behavior.
+ *
+ * @param udid — UDID of the target device
+ */
+export async function clearLocation(this: NativeSimctl, udid: string): Promise<void> {
+  return runCatchingAsync(async () => (await this._findDevice(udid)).clearLocation());
 }
 
 /**

@@ -10,6 +10,7 @@ import {waitForCondition} from 'asyncbox';
 
 import {
   NativeSimctl,
+  NativeSimError,
   NativeSimOperationError,
   NativeSimUnavailableError,
   SimDeviceState,
@@ -203,6 +204,7 @@ describe('NativeSimctl integration', () => {
 
       it('configures the booted device (location, Darwin notification)', async () => {
         await sim.setLocation(device!.udid, 37.7749, -122.4194);
+        await sim.clearLocation(device!.udid);
         await sim.postDarwinNotification(device!.udid, 'com.appium.coresim.test');
       });
 
@@ -387,6 +389,16 @@ describe('NativeSimctl integration', () => {
           const info = await sim.appInfo(device!.udid, UICATALOG_BUNDLE_ID);
           assert.strictEqual(info.CFBundleIdentifier, UICATALOG_BUNDLE_ID);
           assert.ok(UICATALOG_BUNDLE_ID in (await sim.installedApps(device!.udid)));
+
+          const appContainer = await sim.getAppContainer(device!.udid, UICATALOG_BUNDLE_ID);
+          assert.strictEqual(appContainer, info.Path);
+          const dataContainer = await sim.getAppContainer(device!.udid, UICATALOG_BUNDLE_ID, 'data');
+          assert.match(dataContainer, /\/Containers\/Data\/Application\//);
+          await assert.rejects(sim.getAppContainer(device!.udid, UICATALOG_BUNDLE_ID, 'groups'), NativeSimError);
+          await assert.rejects(
+            sim.getAppContainer(device!.udid, UICATALOG_BUNDLE_ID, 'group.does.not.exist'),
+            NativeSimError,
+          );
 
           const pid = await sim.launchApp(device!.udid, UICATALOG_BUNDLE_ID);
           assert.ok(pid > 0);

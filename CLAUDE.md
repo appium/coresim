@@ -100,6 +100,9 @@ toolchain (`make` and `xcodebuild`).
 - **Screenshot capture (`getScreenshot`) reads the device's live framebuffer `IOSurface` in-process**
   — no entitlement, no temp file, no `simctl` subprocess — see `sim_screenshot.mm` for how the main
   display's IO port is found and rendered to PNG.
+- **`getAppContainer` is a pure TS convenience wrapper over `appInfo`'s existing `Path`/
+  `DataContainer`/`GroupContainers` fields** (see `commands/app.ts`) — no new native call, since
+  `propertiesOfApplication:` already reports every container path `simctl get_app_container` does.
 
 ## Known gaps
 

@@ -356,6 +356,14 @@ class NativeDevice : public Napi::ObjectWrap<NativeDevice> {
     });
   }
 
+  Napi::Value ClearLocation(const Napi::CallbackInfo& info) {
+    id device = device_;
+    return RunAsyncVoid(info.Env(), [device]() {
+      NSError* error = nil;
+      ThrowIfFailed(coresim::ClearLocation(device, &error), error);
+    });
+  }
+
   Napi::Value SendPushNotification(const Napi::CallbackInfo& info) {
     id device = device_;
     NSString* bundleId = @(info[0].As<Napi::String>().Utf8Value().c_str());
@@ -776,6 +784,7 @@ void NativeDevice::Init(Napi::Env env) {
                       InstanceMethod<&NativeDevice::InstalledApps>("installedApps"),
                       InstanceMethod<&NativeDevice::OpenUrl>("openUrl"),
                       InstanceMethod<&NativeDevice::SetLocation>("setLocation"),
+                      InstanceMethod<&NativeDevice::ClearLocation>("clearLocation"),
                       InstanceMethod<&NativeDevice::SendPushNotification>("sendPushNotification"),
                       InstanceMethod<&NativeDevice::AddCertificate>("addCertificate"),
                       InstanceMethod<&NativeDevice::ResetKeychain>("resetKeychain"),

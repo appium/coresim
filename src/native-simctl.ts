@@ -5,6 +5,7 @@ import {util} from '@appium/support';
 
 import {
   appInfo,
+  getAppContainer,
   installApp,
   installedApps,
   isAppInstalled,
@@ -17,7 +18,7 @@ import {
   postDarwinNotification,
   setDarwinNotificationState,
 } from './commands/darwin-notification.js';
-import {getEnv, openUrl, pushNotification, setLocation} from './commands/interaction.js';
+import {clearLocation, getEnv, openUrl, pushNotification, setLocation} from './commands/interaction.js';
 import {addCertificate, addRootCertificate, resetKeychain} from './commands/keychain.js';
 import {
   bootDevice,
@@ -170,6 +171,7 @@ Object.assign(NativeSimctl.prototype, {
   isAppInstalled,
   appInfo,
   installedApps,
+  getAppContainer,
 
   // media
   addMedia,
@@ -180,6 +182,7 @@ Object.assign(NativeSimctl.prototype, {
   getEnv,
   openUrl,
   setLocation,
+  clearLocation,
   pushNotification,
 
   // keychain

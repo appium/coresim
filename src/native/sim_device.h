@@ -88,6 +88,9 @@ BOOL OpenURL(id device, NSURL* url, NSError** error);
 // -[SimDevice(SimLocation) setLocationWithLatitude:andLongitude:error:]
 BOOL SetLocation(id device, double latitude, double longitude, NSError** error);
 
+// -[SimDevice(SimLocation) clearSimulatedLocationWithError:]
+BOOL ClearLocation(id device, NSError** error);
+
 // -[SimDevice(SimPushNotification) sendPushNotificationForBundleID:jsonPayload:error:] — despite
 // the selector's "json" naming, the real parameter type is NSDictionary*, not NSData* (confirmed
 // empirically: ObjC type encoding can't distinguish object *classes*, only that a parameter is

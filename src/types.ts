@@ -241,6 +241,7 @@ export interface NativeDeviceHandle {
   installedApps(): Promise<Record<string, unknown>>;
   openUrl(url: string): Promise<void>;
   setLocation(latitude: number, longitude: number): Promise<void>;
+  clearLocation(): Promise<void>;
   sendPushNotification(bundleId: string, payload: PushNotificationPayload): Promise<void>;
   addCertificate(path: string, trustAsRoot: boolean): Promise<void>;
   resetKeychain(): Promise<void>;
