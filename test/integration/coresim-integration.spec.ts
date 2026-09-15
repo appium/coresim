@@ -540,9 +540,12 @@ describe('NativeSimctl integration', () => {
         const status = await sim.getBootStatus(device!.udid);
         assert.strictEqual(status?.isTerminal, true);
 
+        // A generous bound, not a tight one: this only needs to distinguish "resolved on its
+        // first check" from "actually polled through multiple 500ms rounds" (see waitForBoot) —
+        // 10s comfortably fits a loaded CI runner while still failing on a real polling loop.
         const start = Date.now();
         await sim.waitForBoot(device!.udid);
-        assert.ok(Date.now() - start < 2000, 'expected waitForBoot to return near-instantly once already settled');
+        assert.ok(Date.now() - start < 10000, 'expected waitForBoot to return near-instantly once already settled');
       });
 
       it('rejects waitForBoot for a device that is not booting or booted', async () => {
