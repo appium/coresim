@@ -87,5 +87,6 @@ NSString* DeviceTypeName(id deviceType) { return StringGetter(deviceType, "name"
 NSString* RuntimeIdentifier(id runtime) { return StringGetter(runtime, "identifier"); }
 NSString* RuntimeName(id runtime) { return StringGetter(runtime, "name"); }
 NSString* RuntimeVersionString(id runtime) { return StringGetter(runtime, "versionString"); }
+NSString* RuntimeRootPath(id runtime) { return StringGetter(runtime, "root"); }
 
 }  // namespace coresim

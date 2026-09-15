@@ -107,10 +107,18 @@ toolchain (`make` and `xcodebuild`).
   `shake` are pure TS wrappers over the existing Darwin notification primitives** (see
   `commands/biometric.ts`/`commands/misc.ts`) — the same mechanism Simulator.app's own Features menu
   drives, so no new native code was needed for them.
+- **`getWebInspectorSocket` has no CoreSimulator dispatch at all** — `SimDevice`/`SimDeviceSet`
+  expose no PID/socket accessor for a device's own `launchd_sim`. Instead it's `libproc`/`sysctl`
+  process introspection (see `native/sim_process.mm`), the same mechanism `lsof -aUc launchd_sim`
+  uses: match the target UDID against `launchd_sim`'s argv, then scan its fds for a Unix socket
+  ending in `com.apple.webinspectord_sim.socket`. Returns just the path; no entitlement needed.
+- **`listProcesses` must spawn the guest runtime's own `launchctl`, not the host's
+  `/bin/launchctl`** — the host binary exits 5 (wrong launchd). `simctl spawn` resolves a bare
+  `launchctl` against the guest's `$PATH`; our spawn API takes a literal path, so we resolve
+  `<SimRuntime.root>/bin/launchctl` ourselves via `RuntimeRootPath` (internal-only).
 
 ## Known gaps
 
 - No handling of a CoreSimulator/Xcode version mismatch requiring an upgrade (the way `simctl`'s own
   wrapper does).
 - `spawnProcess` has no writable `stdin`.
-- No WebInspector socket discovery yet.

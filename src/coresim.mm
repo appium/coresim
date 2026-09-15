@@ -27,6 +27,7 @@
 #include "native/sim_device.h"
 #include "native/sim_device_set.h"
 #include "native/sim_pasteboard.h"
+#include "native/sim_process.h"
 #include "native/sim_screenshot.h"
 #include "native/sim_service_context.h"
 #include "native/tcc_privacy.h"
@@ -182,6 +183,16 @@ class NativeDevice : public Napi::ObjectWrap<NativeDevice> {
         return Napi::String::New(info.Env(), "");
       }
       return Napi::String::New(info.Env(), coresim::RuntimeIdentifier(runtime).UTF8String);
+    });
+  }
+  // @internal — not part of the public NativeSimctl API (see types.ts's NativeDeviceHandle).
+  Napi::Value RuntimeRootPath(const Napi::CallbackInfo& info) {
+    return CatchToJs(info.Env(), [&]() -> Napi::Value {
+      id runtime = DeviceRuntime(device_);
+      if (runtime == nil) {
+        return Napi::String::New(info.Env(), "");
+      }
+      return Napi::String::New(info.Env(), coresim::RuntimeRootPath(runtime).UTF8String);
     });
   }
 
@@ -592,6 +603,22 @@ class NativeDevice : public Napi::ObjectWrap<NativeDevice> {
     });
   }
 
+  // See native/sim_process.h.
+  Napi::Value GetWebInspectorSocket(const Napi::CallbackInfo& info) {
+    NSString* udid = DeviceUDID(device_).UUIDString;
+    return RunAsync<NSString*>(
+        info.Env(),
+        [udid]() -> NSString* {
+          NSError* error = nil;
+          NSString* result = coresim::FindWebInspectorSocket(udid, &error);
+          ThrowIfFailed(result != nil, error);
+          return result;
+        },
+        [](Napi::Env env, NSString* result) -> Napi::Value {
+          return Napi::String::New(env, result ? result.UTF8String : "");
+        });
+  }
+
   // `format`/`displayId`/`quality` are this addon's own options, not a CoreSimulator options
   // dictionary — the TS layer (commands/screenshot.ts) already constrains `format` to
   // 'png'/'jpeg' and `quality` to a finite 0-100, so anything else (including absent) is just
@@ -771,6 +798,7 @@ void NativeDevice::Init(Napi::Env env) {
                       InstanceMethod<&NativeDevice::State>("state"),
                       InstanceMethod<&NativeDevice::DeviceTypeIdentifier>("deviceTypeIdentifier"),
                       InstanceMethod<&NativeDevice::RuntimeIdentifier>("runtimeIdentifier"),
+                      InstanceMethod<&NativeDevice::RuntimeRootPath>("runtimeRootPath"),
                       InstanceMethod<&NativeDevice::Boot>("boot"),
                       InstanceMethod<&NativeDevice::GetBootStatus>("getBootStatus"),
                       InstanceMethod<&NativeDevice::Shutdown>("shutdown"),
@@ -806,6 +834,7 @@ void NativeDevice::Init(Napi::Env env) {
                       InstanceMethod<&NativeDevice::AddVideo>("addVideo"),
                       InstanceMethod<&NativeDevice::GetPasteboard>("getPasteboard"),
                       InstanceMethod<&NativeDevice::SetPasteboard>("setPasteboard"),
+                      InstanceMethod<&NativeDevice::GetWebInspectorSocket>("getWebInspectorSocket"),
                       InstanceMethod<&NativeDevice::Screenshot>("screenshot"),
                       InstanceMethod<&NativeDevice::GetDisplays>("getDisplays"),
                       InstanceMethod<&NativeDevice::Spawn>("spawn"),
