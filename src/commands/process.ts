@@ -32,9 +32,17 @@ export async function listProcesses(this: NativeSimctl, udid: string): Promise<S
     proc.stderr.on('data', (chunk: Buffer) => {
       stderr += chunk;
     });
+    // stdout/stderr are plain net.Sockets over raw fds — an unhandled 'error' on either would
+    // crash the whole process, not just reject this promise, so race it in as a real rejection.
+    const streamError = Promise.race([once(proc.stdout, 'error'), once(proc.stderr, 'error')]).then(([err]) => {
+      throw err;
+    });
     // 'exit' can fire before the stdout stream has finished delivering its buffered data (see
     // spawnProcess's own integration test) — wait for both before parsing.
-    const [[code, signal]] = await Promise.all([once(proc, 'exit'), once(proc.stdout, 'end')]);
+    const [[code, signal]] = await Promise.race([
+      Promise.all([once(proc, 'exit'), once(proc.stdout, 'end')]),
+      streamError,
+    ]);
     if (code !== 0) {
       const reason = signal ? `signal ${signal}` : `exit code ${code}`;
       throw new Error(`'launchctl list' failed with ${reason}${stderr.trim() ? `: ${stderr.trim()}` : ''}`);
