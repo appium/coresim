@@ -231,6 +231,25 @@ describe('NativeSimctl integration', () => {
         await assert.rejects(() => sim.setDarwinNotificationState(device!.udid, name, 2n ** 64n));
       });
 
+      it('enrolls/un-enrolls biometrics, sends matches, and rejects an unknown biometric name', async () => {
+        assert.strictEqual(await sim.isBiometricEnrolled(device!.udid), false);
+
+        await sim.enrollBiometric(device!.udid, true);
+        assert.strictEqual(await sim.isBiometricEnrolled(device!.udid), true);
+
+        await sim.sendBiometricMatch(device!.udid, true, 'touchId');
+        await sim.sendBiometricMatch(device!.udid, false, 'faceId');
+
+        await sim.enrollBiometric(device!.udid, false);
+        assert.strictEqual(await sim.isBiometricEnrolled(device!.udid), false);
+
+        await assert.rejects(() => sim.sendBiometricMatch(device!.udid, true, 'notARealBiometric' as never));
+      });
+
+      it('performs a shake gesture', async () => {
+        await sim.shake(device!.udid);
+      });
+
       it('gets and sets UI appearance, increase contrast, and content size', async () => {
         await sim.getAppearance(device!.udid);
         await sim.setAppearance(device!.udid, 2);

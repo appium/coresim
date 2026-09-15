@@ -13,6 +13,7 @@ import {
   removeApp,
   terminateApp,
 } from './commands/app.js';
+import {enrollBiometric, isBiometricEnrolled, sendBiometricMatch} from './commands/biometric.js';
 import {
   getDarwinNotificationState,
   postDarwinNotification,
@@ -34,6 +35,7 @@ import {
   waitForBoot,
 } from './commands/lifecycle.js';
 import {addMedia, addPhoto, addVideo} from './commands/media.js';
+import {shake} from './commands/misc.js';
 import {getPasteboard, setPasteboard} from './commands/pasteboard.js';
 import {getPermission, grantPermission, resetPermission, revokePermission} from './commands/permissions.js';
 import {getDisplays, getScreenshot} from './commands/screenshot.js';
@@ -51,11 +53,13 @@ import {
 // import graph — the named imports above alone aren't part of NativeSimctl's emitted type
 // surface, so `tsc` would otherwise drop them from the declaration output.
 import './commands/app.js';
+import './commands/biometric.js';
 import './commands/darwin-notification.js';
 import './commands/interaction.js';
 import './commands/keychain.js';
 import './commands/lifecycle.js';
 import './commands/media.js';
+import './commands/misc.js';
 import './commands/pasteboard.js';
 import './commands/permissions.js';
 import './commands/screenshot.js';
@@ -177,6 +181,14 @@ Object.assign(NativeSimctl.prototype, {
   addMedia,
   addPhoto,
   addVideo,
+
+  // biometric
+  isBiometricEnrolled,
+  enrollBiometric,
+  sendBiometricMatch,
+
+  // misc
+  shake,
 
   // interaction
   getEnv,

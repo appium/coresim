@@ -103,6 +103,10 @@ toolchain (`make` and `xcodebuild`).
 - **`getAppContainer` is a pure TS convenience wrapper over `appInfo`'s existing `Path`/
   `DataContainer`/`GroupContainers` fields** (see `commands/app.ts`) — no new native call, since
   `propertiesOfApplication:` already reports every container path `simctl get_app_container` does.
+- **Biometric enrollment/matching (`enrollBiometric`/`sendBiometricMatch`/`isBiometricEnrolled`) and
+  `shake` are pure TS wrappers over the existing Darwin notification primitives** (see
+  `commands/biometric.ts`/`commands/misc.ts`) — the same mechanism Simulator.app's own Features menu
+  drives, so no new native code was needed for them.
 
 ## Known gaps
 
