@@ -2,6 +2,7 @@ import assert from 'node:assert';
 import {execFileSync} from 'node:child_process';
 import {once} from 'node:events';
 import fs from 'node:fs';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import {after, before, describe, it} from 'node:test';
@@ -97,6 +98,7 @@ function readTCCGranted(udid: string, tccService: string, bundleId: string): boo
 interface RuntimeFixture {
   runtimeIdentifier: string;
   runtimeName: string;
+  runtimeVersion: string;
   deviceTypeIdentifier: string;
 }
 
@@ -108,30 +110,66 @@ interface RuntimeFixture {
  */
 async function availableRuntimeFixtures(sim: NativeSimctl): Promise<RuntimeFixture[]> {
   const [runtimes, devices] = await Promise.all([sim.getSupportedRuntimes(), sim.getDevices()]);
-  const runtimeNameById = new Map(runtimes.map((r) => [r.identifier, r.name]));
+  const runtimeById = new Map(runtimes.map((r) => [r.identifier, r]));
   const deviceTypeByRuntime = new Map<string, string>();
   for (const device of devices) {
     if (device.runtimeIdentifier && device.deviceTypeIdentifier && !deviceTypeByRuntime.has(device.runtimeIdentifier)) {
       deviceTypeByRuntime.set(device.runtimeIdentifier, device.deviceTypeIdentifier);
     }
   }
-  return [...deviceTypeByRuntime.entries()].map(([runtimeIdentifier, deviceTypeIdentifier]) => ({
-    runtimeIdentifier,
-    runtimeName: runtimeNameById.get(runtimeIdentifier) ?? runtimeIdentifier,
-    deviceTypeIdentifier,
-  }));
+  return [...deviceTypeByRuntime.entries()].map(([runtimeIdentifier, deviceTypeIdentifier]) => {
+    const runtime = runtimeById.get(runtimeIdentifier);
+    return {
+      runtimeIdentifier,
+      runtimeName: runtime?.name ?? runtimeIdentifier,
+      runtimeVersion: runtime?.versionString ?? '0',
+      deviceTypeIdentifier,
+    };
+  });
+}
+
+/** Numeric dot-separated version comparison, e.g. `"26.4"` vs `"16.4.1"`. */
+function compareVersions(a: string, b: string): number {
+  const partsA = a.split('.').map(Number);
+  const partsB = b.split('.').map(Number);
+  for (let i = 0; i < Math.max(partsA.length, partsB.length); i++) {
+    const diff = (partsA[i] ?? 0) - (partsB[i] ?? 0);
+    if (diff !== 0) {
+      return diff;
+    }
+  }
+  return 0;
+}
+
+/** `"26.4"` for "Xcode 26.4.1", or `null` if unparseable. */
+function activeXcodeMajorMinor(): string | null {
+  const output = execFileSync('xcodebuild', ['-version'], {encoding: 'utf8'});
+  const match = /^Xcode (\d+)\.(\d+)/.exec(output);
+  return match ? `${match[1]}.${match[2]}` : null;
+}
+
+// CI runner images pre-install several simulator runtimes as shared, Xcode-independent volumes
+// (simctl list runtimes shows iOS 26.2/26.4/26.5 regardless of the active Xcode) — fixtures[0]
+// would pick an arbitrary one instead of the runtime the job's matrix entry actually asked for.
+// Prefer a runtime matching the active Xcode's major.minor; fall back to the newest installed.
+function selectTarget(fixtures: RuntimeFixture[]): RuntimeFixture[] {
+  if (fixtures.length === 0) {
+    return [];
+  }
+  const xcodeVersion = activeXcodeMajorMinor();
+  const exactMatch = xcodeVersion
+    ? fixtures.find((f) => f.runtimeVersion === xcodeVersion || f.runtimeVersion.startsWith(`${xcodeVersion}.`))
+    : undefined;
+  return [exactMatch ?? [...fixtures].sort((a, b) => compareVersions(b.runtimeVersion, a.runtimeVersion))[0]];
 }
 
 // Resolved via top-level await (before any describe/it registers) since node:test builds its test
 // tree synchronously — the per-runtime describe blocks below need the fixture list up front.
 const sim = new NativeSimctl();
 const fixtures = await availableRuntimeFixtures(sim);
-// Only the first available runtime is exercised — the CI job matrix (integration-test.yml)
-// already varies Xcode/CoreSimulator version across jobs, which is the axis that actually matters
-// for this addon (a different Xcode ships a different bundled CoreSimulator); testing every
-// runtime a single Xcode install happens to have on top of that is redundant and multiplies this
-// suite's already-expensive real-boot cost for no extra coverage.
-const targets = fixtures.slice(0, 1);
+// Only one runtime is exercised — the CI job matrix already varies Xcode/CoreSimulator version,
+// which is the axis that matters here; see selectTarget for why it's not just fixtures[0].
+const targets = selectTarget(fixtures);
 // One throwaway cert shared across every runtime's keychain checks — its content is irrelevant,
 // so there's no reason to mint a fresh one per runtime.
 const certPath = await createSelfSignedCert();
@@ -363,6 +401,20 @@ describe('NativeSimctl integration', () => {
         assert.strictEqual(actual, expected);
       });
 
+      it('locates the booted device WebInspector socket and can connect to it', async () => {
+        const socketPath = await sim.getWebInspectorSocket(device!.udid);
+        assert.match(socketPath, /com\.apple\.webinspectord_sim\.socket$/);
+        assert.ok(fs.existsSync(socketPath), `expected a real socket file at ${socketPath}`);
+        await new Promise<void>((resolve, reject) => {
+          const socket = net.connect(socketPath);
+          socket.once('connect', () => {
+            socket.end();
+            resolve();
+          });
+          socket.once('error', reject);
+        });
+      });
+
       it('captures a screenshot of the booted device (PNG default, JPEG, and by displayId)', async (t) => {
         let png: Buffer;
         try {
@@ -397,7 +449,22 @@ describe('NativeSimctl integration', () => {
 
       if (isIOSRuntime(fixture.runtimeIdentifier)) {
         it('opens a URL', async () => {
-          await sim.openUrl(device!.udid, 'https://appium.io');
+          // openURL can transiently ETIMEDOUT for a few seconds right after boot even once
+          // waitForBoot() is terminal (observed in CI) — retry instead of failing on one timeout.
+          await waitForCondition(
+            async () => {
+              try {
+                await sim.openUrl(device!.udid, 'https://appium.io');
+                return true;
+              } catch (err) {
+                if (err instanceof NativeSimOperationError && err.domain === 'NSPOSIXErrorDomain' && err.code === 60) {
+                  return false;
+                }
+                throw err;
+              }
+            },
+            {waitMs: 30000, intervalMs: 2000, error: 'expected openUrl to eventually succeed once the device settled'},
+          );
         });
 
         it('installs, inspects, launches, terminates, and removes an app', async () => {
@@ -421,6 +488,11 @@ describe('NativeSimctl integration', () => {
 
           const pid = await sim.launchApp(device!.udid, UICATALOG_BUNDLE_ID);
           assert.ok(pid > 0);
+
+          const processes = await sim.listProcesses(device!.udid);
+          const launched = processes.find((p) => p.name === UICATALOG_BUNDLE_ID);
+          assert.deepStrictEqual(launched, {pid, group: 'UIKitApplication', name: UICATALOG_BUNDLE_ID});
+
           await sim.terminateApp(device!.udid, UICATALOG_BUNDLE_ID);
 
           await sim.removeApp(device!.udid, UICATALOG_BUNDLE_ID);
@@ -468,9 +540,12 @@ describe('NativeSimctl integration', () => {
         const status = await sim.getBootStatus(device!.udid);
         assert.strictEqual(status?.isTerminal, true);
 
+        // A generous bound, not a tight one: this only needs to distinguish "resolved on its
+        // first check" from "actually polled through multiple 500ms rounds" (see waitForBoot) —
+        // 10s comfortably fits a loaded CI runner while still failing on a real polling loop.
         const start = Date.now();
         await sim.waitForBoot(device!.udid);
-        assert.ok(Date.now() - start < 2000, 'expected waitForBoot to return near-instantly once already settled');
+        assert.ok(Date.now() - start < 10000, 'expected waitForBoot to return near-instantly once already settled');
       });
 
       it('rejects waitForBoot for a device that is not booting or booted', async () => {
