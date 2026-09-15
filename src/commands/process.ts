@@ -10,20 +10,6 @@ declare module '../native-simctl.js' {
   }
 }
 
-function extractGroup(label: string): string | null {
-  const colonIdx = label.indexOf(':');
-  return colonIdx >= 0 ? label.slice(0, colonIdx) : null;
-}
-
-function extractName(label: string): string {
-  let name = label.includes(':') ? label.slice(label.indexOf(':') + 1) : label;
-  const bracketIdx = name.indexOf('[');
-  if (bracketIdx >= 0) {
-    name = name.slice(0, bracketIdx);
-  }
-  return name;
-}
-
 /**
  * Lists currently-running processes/launchd jobs on the given (booted) device, by spawning
  * `launchctl list` inside it and parsing its `PID / Status / Label` output. A `-` PID column
@@ -69,4 +55,18 @@ export async function listProcesses(this: NativeSimctl, udid: string): Promise<S
     }
     return result;
   });
+}
+
+function extractGroup(label: string): string | null {
+  const colonIdx = label.indexOf(':');
+  return colonIdx >= 0 ? label.slice(0, colonIdx) : null;
+}
+
+function extractName(label: string): string {
+  let name = label.includes(':') ? label.slice(label.indexOf(':') + 1) : label;
+  const bracketIdx = name.indexOf('[');
+  if (bracketIdx >= 0) {
+    name = name.slice(0, bracketIdx);
+  }
+  return name;
 }
