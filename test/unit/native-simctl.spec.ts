@@ -95,6 +95,20 @@ describe('NativeSimctl (read-only)', {timeout: 30000}, () => {
     );
   });
 
+  it('rejects sendBiometricMatch for an inherited property name, not just an unlisted own one', async () => {
+    // Validated before the device is even looked up, so no real device/udid is needed here.
+    // Object.prototype members (toString, constructor, __proto__, ...) are truthy on a plain
+    // object lookup, so a naive `map[name]` check would let them slip through instead of hitting
+    // the documented validation error — regression test for that.
+    const sim = new NativeSimctl();
+    for (const biometricName of ['__proto__', 'constructor', 'toString']) {
+      await assert.rejects(
+        () => sim.sendBiometricMatch('00000000-0000-0000-0000-000000000000', true, biometricName as never),
+        /is not a valid biometric/,
+      );
+    }
+  });
+
   it('never throws at construction, even with a bad developer dir', () => {
     // The native sharedServiceContext call is deferred to first actual use (see the
     // `serviceContext` getter), so constructing with a bad developerDir must always succeed —

@@ -56,12 +56,12 @@ export async function sendBiometricMatch(
   shouldMatch = true,
   biometricName: BiometricName = 'touchId',
 ): Promise<void> {
-  const domainComponent = BIOMETRIC_DOMAIN_COMPONENTS[biometricName];
-  if (!domainComponent) {
+  if (!Object.hasOwn(BIOMETRIC_DOMAIN_COMPONENTS, biometricName)) {
     throw new Error(
       `'${biometricName}' is not a valid biometric — use one of: ${Object.keys(BIOMETRIC_DOMAIN_COMPONENTS).join(', ')}`,
     );
   }
+  const domainComponent = BIOMETRIC_DOMAIN_COMPONENTS[biometricName];
   await this.postDarwinNotification(
     udid,
     `com.apple.BiometricKit_Sim.${domainComponent}.${shouldMatch ? '' : 'no'}match`,
