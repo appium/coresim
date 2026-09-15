@@ -140,45 +140,47 @@ export async function getAppContainer(
   bundleId: string,
   containerType: AppContainerType | string = 'app',
 ): Promise<string> {
-  const info = await this.appInfo(udid, bundleId);
-  if (containerType === 'app') {
-    const path = info.Path;
-    if (typeof path !== 'string') {
-      throw new Error(`No app bundle path was reported for '${bundleId}'`);
+  return runCatchingAsync(async () => {
+    const info = await this.appInfo(udid, bundleId);
+    if (containerType === 'app') {
+      const path = info.Path;
+      if (typeof path !== 'string') {
+        throw new Error(`No app bundle path was reported for '${bundleId}'`);
+      }
+      return path;
     }
-    return path;
-  }
-  if (containerType === 'data') {
-    const path = toFsPath(info.DataContainer);
+    if (containerType === 'data') {
+      const path = toFsPath(info.DataContainer);
+      if (!path) {
+        throw new Error(`No data container was found for '${bundleId}' — has the device been booted since install?`);
+      }
+      return path;
+    }
+    const groupContainers = (info.GroupContainers ?? {}) as Record<string, unknown>;
+    if (containerType === 'groups') {
+      const entries = Object.entries(groupContainers);
+      if (entries.length === 0) {
+        throw new Error(`'${bundleId}' has no App Group containers`);
+      }
+      if (entries.length > 1) {
+        throw new Error(
+          `'${bundleId}' has multiple App Group containers (${Object.keys(groupContainers).join(', ')}) — ` +
+            `specify one by its group identifier instead of 'groups'`,
+        );
+      }
+      const path = toFsPath(entries[0][1]);
+      if (!path) {
+        throw new Error(`'${bundleId}''s App Group container has no reported path`);
+      }
+      return path;
+    }
+    const path = toFsPath(groupContainers[containerType]);
     if (!path) {
-      throw new Error(`No data container was found for '${bundleId}' — has the device been booted since install?`);
+      const available = Object.keys(groupContainers);
+      const availability =
+        available.length > 0 ? `available: ${available.join(', ')}` : 'it has no App Group containers at all';
+      throw new Error(`'${bundleId}' has no App Group container with identifier '${containerType}' — ${availability}`);
     }
     return path;
-  }
-  const groupContainers = (info.GroupContainers ?? {}) as Record<string, unknown>;
-  if (containerType === 'groups') {
-    const entries = Object.entries(groupContainers);
-    if (entries.length === 0) {
-      throw new Error(`'${bundleId}' has no App Group containers`);
-    }
-    if (entries.length > 1) {
-      throw new Error(
-        `'${bundleId}' has multiple App Group containers (${Object.keys(groupContainers).join(', ')}) — ` +
-          `specify one by its group identifier instead of 'groups'`,
-      );
-    }
-    const path = toFsPath(entries[0][1]);
-    if (!path) {
-      throw new Error(`'${bundleId}''s App Group container has no reported path`);
-    }
-    return path;
-  }
-  const path = toFsPath(groupContainers[containerType]);
-  if (!path) {
-    const available = Object.keys(groupContainers);
-    const availability =
-      available.length > 0 ? `available: ${available.join(', ')}` : 'it has no App Group containers at all';
-    throw new Error(`'${bundleId}' has no App Group container with identifier '${containerType}' — ${availability}`);
-  }
-  return path;
+  });
 }

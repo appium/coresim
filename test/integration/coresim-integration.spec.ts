@@ -10,6 +10,7 @@ import {waitForCondition} from 'asyncbox';
 
 import {
   NativeSimctl,
+  NativeSimError,
   NativeSimOperationError,
   NativeSimUnavailableError,
   SimDeviceState,
@@ -393,8 +394,11 @@ describe('NativeSimctl integration', () => {
           assert.strictEqual(appContainer, info.Path);
           const dataContainer = await sim.getAppContainer(device!.udid, UICATALOG_BUNDLE_ID, 'data');
           assert.match(dataContainer, /\/Containers\/Data\/Application\//);
-          await assert.rejects(sim.getAppContainer(device!.udid, UICATALOG_BUNDLE_ID, 'groups'));
-          await assert.rejects(sim.getAppContainer(device!.udid, UICATALOG_BUNDLE_ID, 'group.does.not.exist'));
+          await assert.rejects(sim.getAppContainer(device!.udid, UICATALOG_BUNDLE_ID, 'groups'), NativeSimError);
+          await assert.rejects(
+            sim.getAppContainer(device!.udid, UICATALOG_BUNDLE_ID, 'group.does.not.exist'),
+            NativeSimError,
+          );
 
           const pid = await sim.launchApp(device!.udid, UICATALOG_BUNDLE_ID);
           assert.ok(pid > 0);
