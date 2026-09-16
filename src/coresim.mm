@@ -688,10 +688,9 @@ class NativeDevice : public Napi::ObjectWrap<NativeDevice> {
     return RunAsync<SpawnResult>(
         env,
         [device, path, userOptions, exitTsfn]() -> SpawnResult {
-          // NSFileHandle wrapping a pipe's write end is a confirmed-safe value for stdout/stderr
-          // (see CLAUDE.md) — verified empirically against a live simulator, including that our
-          // own copy of the write end must be closed right after spawning (below) for EOF to ever
-          // reach the read end once the child exits.
+          // stdout/stderr must be raw fd numbers (NSNumber), not NSFileHandle objects — see
+          // CLAUDE.md. Our own copy of the write end still closes right after spawning (below) so
+          // EOF reaches the read end once the child exits.
           NSPipe* stdoutPipe = [NSPipe pipe];
           NSPipe* stderrPipe = [NSPipe pipe];
 
@@ -721,8 +720,20 @@ class NativeDevice : public Napi::ObjectWrap<NativeDevice> {
           }
 
           NSMutableDictionary* options = [userOptions mutableCopy];
-          options[@"stdout"] = stdoutPipe.fileHandleForWriting;
-          options[@"stderr"] = stderrPipe.fileHandleForWriting;
+          options[@"stdout"] = @(stdoutPipe.fileHandleForWriting.fileDescriptor);
+          options[@"stderr"] = @(stderrPipe.fileHandleForWriting.fileDescriptor);
+          // kSimDeviceSpawnStandalone (literal key "standalone" — confirmed via `strings` on the
+          // framework binary) — see CLAUDE.md/SpawnOptions. Defaults to YES: without it,
+          // CoreSimulator from Xcode 26.4+ never wires up the child's dyld shared-cache
+          // environment, aborting it with SIGABRT trying to load even libSystem.B.dylib. Except for
+          // launchctl itself, which needs to stay attached to the guest's launchd bootstrap
+          // namespace to function at all — checked here (by executable name) rather than left to
+          // each caller, so any spawnProcess(..., ".../launchctl", ...) call gets this right, not
+          // just listProcesses' own internal one.
+          if (!options[@"standalone"]) {
+            BOOL isLaunchctl = [path.lastPathComponent isEqualToString:@"launchctl"];
+            options[@"standalone"] = @(!isLaunchctl);
+          }
 
           void (^terminationHandler)(int) = ^(int status) {
             // Confirmed empirically (see CLAUDE.md): `status` is a raw wait(2)-style status, not a

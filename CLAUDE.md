@@ -87,7 +87,18 @@ toolchain (`make` and `xcodebuild`).
 - **A wrong-shaped argument to some native calls crashes the whole process, not just the call.**
   Exceptions raised on a thread other than the one that made the call can't be caught by the usual
   `@try`/`@catch` guard. `spawnProcess`'s `stdout`/`stderr` handling is the known instance of this —
-  it's why the addon always manages those pipes itself rather than accepting them as options.
+  it's why the addon always manages those pipes itself rather than accepting them as options. Also
+  confirmed the hard way: passing the pipe's `NSFileHandle` object itself (not just a wrong type)
+  crashed the process on some CoreSimulator versions via `-[NSConcreteFileHandle intValue]:
+  unrecognized selector` — the internal handler wants a raw fd number (`NSNumber`).
+- **`spawnProcess` defaults the spawn options' `"standalone"` key to `true`**
+  (`kSimDeviceSpawnStandalone`, confirmed via `strings` on the framework binary — no public header
+  exists). Without it, CoreSimulator from Xcode 26.4+ never wires up the spawned process's dyld
+  shared-cache environment, aborting it with SIGABRT trying to load even `libSystem.B.dylib` —
+  reproduced only on hosted CI (never locally), diagnosed from the child's own crash report. The
+  one exception is `launchctl` itself, defaulted to `false` (checked by executable name in
+  coresim.mm, not left to callers) since it needs to stay attached to the guest's launchd bootstrap
+  namespace to function at all — a standalone spawn is detached from it.
 - **Privacy permissions (`grantPermission`/`revokePermission`/`resetPermission`) are implemented by
   writing directly to the simulator's own TCC (privacy) SQLite database**, not by calling
   CoreSimulator's private privacy API — that API requires a process entitlement no ordinary npm
