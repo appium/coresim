@@ -13,6 +13,10 @@ id SharedServiceContext(NSString* developerDir, NSError** error);
 // -[SimServiceContext defaultDeviceSetWithError:]
 id DefaultDeviceSet(id serviceContext, NSError** error);
 
+// -[SimServiceContext deviceSetWithPath:error:] — the same selector `simctl --set <path>` uses to
+// address a non-default device set.
+id DeviceSetWithPath(id serviceContext, NSString* path, NSError** error);
+
 // -[SimServiceContext supportedDeviceTypes] -> NSArray<SimDeviceType*>
 NSArray* SupportedDeviceTypes(id serviceContext);
 

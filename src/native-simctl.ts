@@ -103,11 +103,16 @@ export class NativeSimctl {
 
   /**
    * @param developerDir — defaults to `xcode-select -p` (the active Xcode's Developer dir).
-   * Constructing a NativeSimctl must never throw — the platform check and the native
-   * sharedServiceContext call both happen lazily in the `_serviceContext` getter below, so only a
-   * method that actually needs the simulator (getDevices(), createDevice(), ...) can raise.
+   * @param deviceSetPath — defaults to the default device set
+   * (`~/Library/Developer/CoreSimulator/Devices`), same as `simctl --set <path>`. Constructing a
+   * NativeSimctl must never throw — the platform check and the native sharedServiceContext call
+   * both happen lazily in the `_serviceContext` getter below, so only a method that actually needs
+   * the simulator (getDevices(), createDevice(), ...) can raise.
    */
-  constructor(private readonly developerDir?: string) {}
+  constructor(
+    private readonly developerDir?: string,
+    private readonly deviceSetPath?: string,
+  ) {}
 
   /** @returns `CFBundleVersion` of the loaded `CoreSimulator.framework` (e.g. `"1171.6"`). */
   static async frameworkVersion(): Promise<string> {
@@ -141,7 +146,10 @@ export class NativeSimctl {
   /** @internal Not part of the public API — exposed only so `src/commands/*.ts` mixins can call it. */
   async _deviceSet(): Promise<NativeDeviceSetHandle> {
     const context = await this._serviceContext();
-    return runCatchingAsync(() => context.defaultDeviceSet());
+    const deviceSetPath = this.deviceSetPath;
+    return runCatchingAsync(() =>
+      deviceSetPath ? context.deviceSetWithPath(deviceSetPath) : context.defaultDeviceSet(),
+    );
   }
 
   /** @internal Not part of the public API — exposed only so `src/commands/*.ts` mixins can call it. */

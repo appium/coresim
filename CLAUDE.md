@@ -112,6 +112,10 @@ toolchain (`make` and `xcodebuild`).
   process introspection (see `native/sim_process.mm`), the same mechanism `lsof -aUc launchd_sim`
   uses: match the target UDID against `launchd_sim`'s argv, then scan its fds for a Unix socket
   ending in `com.apple.webinspectord_sim.socket`. Returns just the path; no entitlement needed.
+- **A non-default device set (`simctl --set <path>`'s equivalent) is opt-in per `NativeSimctl`
+  instance** — pass `deviceSetPath` as the constructor's second argument; every device lookup then
+  resolves against `-[SimServiceContext deviceSetWithPath:error:]` instead of
+  `defaultDeviceSetWithError:`. Unset, behavior is unchanged (the default device set).
 - **`listProcesses` must spawn the guest runtime's own `launchctl`, not the host's
   `/bin/launchctl`** — the host binary exits 5 (wrong launchd). `simctl spawn` resolves a bare
   `launchctl` against the guest's `$PATH`; our spawn API takes a literal path, so we resolve

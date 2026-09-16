@@ -1,8 +1,13 @@
 import assert from 'node:assert';
-import {execFileSync} from 'node:child_process';
+import {execFile} from 'node:child_process';
+import {mkdtemp, rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {describe, it} from 'node:test';
 import {pathToFileURL} from 'node:url';
+import {promisify} from 'node:util';
+
+const execFileAsync = promisify(execFile);
 
 import {NativeSimctl, NativeSimError, NativeSimUnavailableError, SimDeviceState} from '../../src/index.js';
 import {getPkgRoot} from '../../src/utils/index.js';
@@ -109,6 +114,26 @@ describe('NativeSimctl (read-only)', {timeout: 30000}, () => {
     }
   });
 
+  it('addresses a fresh, empty device set when constructed with a deviceSetPath, leaving the default set untouched', async () => {
+    // Read-only from the default device set's perspective: this only ever points a *second*
+    // NativeSimctl at a brand-new, throwaway directory — it never boots/creates/deletes anything
+    // in the real default set. A brand-new directory has no devices, which is exactly what
+    // distinguishes -[SimServiceContext deviceSetWithPath:error:] actually being used from a bug
+    // that silently fell back to the default set.
+    const emptySetDir = await mkdtemp(path.join(tmpdir(), 'coresim-empty-device-set-'));
+    try {
+      const isolated = new NativeSimctl(undefined, emptySetDir);
+      const devices = await isolated.getDevices();
+      assert.deepStrictEqual(devices, []);
+
+      const defaultSet = new NativeSimctl();
+      const defaultDevices = await defaultSet.getDevices();
+      assert.ok(defaultDevices.length > 0, 'expected the default device set to be unaffected');
+    } finally {
+      await rm(emptySetDir, {recursive: true, force: true});
+    }
+  });
+
   it('never throws at construction, even with a bad developer dir', () => {
     // The native sharedServiceContext call is deferred to first actual use (see the
     // `serviceContext` getter), so constructing with a bad developerDir must always succeed —
@@ -137,26 +162,23 @@ describe('NativeSimctl (read-only)', {timeout: 30000}, () => {
  * process), since that would leak into every other test that runs afterward here.
  */
 describe('NativeSimctl (cross-platform)', () => {
-  function runWithFakedPlatform(platform: string, script: string): string {
-    return execFileSync(
-      process.execPath,
-      [
-        '--input-type=module',
-        '-e',
-        `Object.defineProperty(process, 'platform', {value: '${platform}'});` +
-          `const mod = await import('${INDEX_MODULE_URL}');\n${script}`,
-      ],
-      {encoding: 'utf8'},
-    );
+  async function runWithFakedPlatform(platform: string, script: string): Promise<string> {
+    const {stdout} = await execFileAsync(process.execPath, [
+      '--input-type=module',
+      '-e',
+      `Object.defineProperty(process, 'platform', {value: '${platform}'});` +
+        `const mod = await import('${INDEX_MODULE_URL}');\n${script}`,
+    ]);
+    return stdout;
   }
 
-  it('can be imported on a non-macOS platform without throwing', () => {
-    const output = runWithFakedPlatform('win32', "console.log('imported ok:', typeof mod.NativeSimctl);");
+  it('can be imported on a non-macOS platform without throwing', async () => {
+    const output = await runWithFakedPlatform('win32', "console.log('imported ok:', typeof mod.NativeSimctl);");
     assert.match(output, /imported ok: function/);
   });
 
-  it('does not throw when constructed on a non-macOS platform', () => {
-    const output = runWithFakedPlatform(
+  it('does not throw when constructed on a non-macOS platform', async () => {
+    const output = await runWithFakedPlatform(
       'win32',
       `const sim = new mod.NativeSimctl('/some/dir');
        console.log('constructed ok:', sim instanceof mod.NativeSimctl);`,
@@ -164,8 +186,8 @@ describe('NativeSimctl (cross-platform)', () => {
     assert.match(output, /constructed ok: true/);
   });
 
-  it('rejects with a typed NativeSimUnavailableError only once a method actually needs the simulator', () => {
-    const output = runWithFakedPlatform(
+  it('rejects with a typed NativeSimUnavailableError only once a method actually needs the simulator', async () => {
+    const output = await runWithFakedPlatform(
       'win32',
       `const sim = new mod.NativeSimctl('/some/dir');
        try {

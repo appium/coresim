@@ -952,6 +952,22 @@ class NativeServiceContext : public Napi::ObjectWrap<NativeServiceContext> {
         });
   }
 
+  Napi::Value DeviceSetWithPathMethod(const Napi::CallbackInfo& info) {
+    id serviceContext = serviceContext_;
+    NSString* path = @(info[0].As<Napi::String>().Utf8Value().c_str());
+    return RunAsync<id>(
+        info.Env(),
+        [serviceContext, path]() -> id {
+          NSError* error = nil;
+          id deviceSet = DeviceSetWithPath(serviceContext, path, &error);
+          ThrowIfFailed(deviceSet != nil, error);
+          return deviceSet;
+        },
+        [serviceContext](Napi::Env env, id deviceSet) -> Napi::Value {
+          return NativeDeviceSet::NewInstance(env, deviceSet, serviceContext);
+        });
+  }
+
   Napi::Value SupportedDeviceTypesMethod(const Napi::CallbackInfo& info) {
     id serviceContext = serviceContext_;
     return RunAsync<std::vector<DeviceTypeEntry>>(
@@ -1015,6 +1031,7 @@ void NativeServiceContext::Init(Napi::Env env) {
       DefineClass(env, "NativeServiceContext",
                   {
                       InstanceMethod<&NativeServiceContext::DefaultDeviceSetMethod>("defaultDeviceSet"),
+                      InstanceMethod<&NativeServiceContext::DeviceSetWithPathMethod>("deviceSetWithPath"),
                       InstanceMethod<&NativeServiceContext::SupportedDeviceTypesMethod>("supportedDeviceTypes"),
                       InstanceMethod<&NativeServiceContext::SupportedRuntimesMethod>("supportedRuntimes"),
                   });
