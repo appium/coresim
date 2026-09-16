@@ -688,10 +688,9 @@ class NativeDevice : public Napi::ObjectWrap<NativeDevice> {
     return RunAsync<SpawnResult>(
         env,
         [device, path, userOptions, exitTsfn]() -> SpawnResult {
-          // NSFileHandle wrapping a pipe's write end is a confirmed-safe value for stdout/stderr
-          // (see CLAUDE.md) — verified empirically against a live simulator, including that our
-          // own copy of the write end must be closed right after spawning (below) for EOF to ever
-          // reach the read end once the child exits.
+          // stdout/stderr must be raw fd numbers (NSNumber), not NSFileHandle objects — see
+          // CLAUDE.md. Our own copy of the write end still closes right after spawning (below) so
+          // EOF reaches the read end once the child exits.
           NSPipe* stdoutPipe = [NSPipe pipe];
           NSPipe* stderrPipe = [NSPipe pipe];
 
@@ -721,8 +720,8 @@ class NativeDevice : public Napi::ObjectWrap<NativeDevice> {
           }
 
           NSMutableDictionary* options = [userOptions mutableCopy];
-          options[@"stdout"] = stdoutPipe.fileHandleForWriting;
-          options[@"stderr"] = stderrPipe.fileHandleForWriting;
+          options[@"stdout"] = @(stdoutPipe.fileHandleForWriting.fileDescriptor);
+          options[@"stderr"] = @(stderrPipe.fileHandleForWriting.fileDescriptor);
 
           void (^terminationHandler)(int) = ^(int status) {
             // Confirmed empirically (see CLAUDE.md): `status` is a raw wait(2)-style status, not a

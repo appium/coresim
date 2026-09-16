@@ -87,7 +87,10 @@ toolchain (`make` and `xcodebuild`).
 - **A wrong-shaped argument to some native calls crashes the whole process, not just the call.**
   Exceptions raised on a thread other than the one that made the call can't be caught by the usual
   `@try`/`@catch` guard. `spawnProcess`'s `stdout`/`stderr` handling is the known instance of this —
-  it's why the addon always manages those pipes itself rather than accepting them as options.
+  it's why the addon always manages those pipes itself rather than accepting them as options. Also
+  confirmed the hard way: passing the pipe's `NSFileHandle` object itself (not just a wrong type)
+  crashed the process on some CoreSimulator versions via `-[NSConcreteFileHandle intValue]:
+  unrecognized selector` — the internal handler wants a raw fd number (`NSNumber`).
 - **Privacy permissions (`grantPermission`/`revokePermission`/`resetPermission`) are implemented by
   writing directly to the simulator's own TCC (privacy) SQLite database**, not by calling
   CoreSimulator's private privacy API — that API requires a process entitlement no ordinary npm
