@@ -38,6 +38,7 @@ import {addMedia, addPhoto, addVideo} from './commands/media.js';
 import {shake} from './commands/misc.js';
 import {getPasteboard, setPasteboard} from './commands/pasteboard.js';
 import {getPermission, grantPermission, resetPermission, revokePermission} from './commands/permissions.js';
+import {listProcesses} from './commands/process.js';
 import {getDisplays, getScreenshot} from './commands/screenshot.js';
 import {spawnProcess} from './commands/spawn.js';
 import {
@@ -48,6 +49,7 @@ import {
   setContentSize,
   setIncreaseContrast,
 } from './commands/ui.js';
+import {getWebInspectorSocket} from './commands/webinspector.js';
 // Bare re-imports so `declare module './native-simctl.js'` augmentations in the command modules
 // (which add their methods to NativeSimctl's type) reach downstream consumers' emitted .d.ts
 // import graph — the named imports above alone aren't part of NativeSimctl's emitted type
@@ -62,9 +64,11 @@ import './commands/media.js';
 import './commands/misc.js';
 import './commands/pasteboard.js';
 import './commands/permissions.js';
+import './commands/process.js';
 import './commands/screenshot.js';
 import './commands/spawn.js';
 import './commands/ui.js';
+import './commands/webinspector.js';
 import {NativeSimUnavailableError} from './errors.js';
 import type {
   NativeCoreSimModule,
@@ -216,6 +220,9 @@ Object.assign(NativeSimctl.prototype, {
   resetPermission,
   getPermission,
 
+  // process
+  listProcesses,
+
   // darwin notification
   getDarwinNotificationState,
   setDarwinNotificationState,
@@ -228,6 +235,9 @@ Object.assign(NativeSimctl.prototype, {
   // screenshot
   getScreenshot,
   getDisplays,
+
+  // webinspector
+  getWebInspectorSocket,
 
   // spawn
   spawnProcess,

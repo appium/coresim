@@ -143,6 +143,16 @@ export interface SpawnOptions {
   environment?: Record<string, string>;
 }
 
+/** One running process/launchd job inside a device, as reported by `NativeSimctl.listProcesses`. */
+export interface SimProcessInfo {
+  /** The process's real host OS pid (the simulator shares the host kernel). */
+  pid: number;
+  /** The launchd job's group, parsed from a label like `UIKitApplication:com.apple.app[...]` — `null` if the label has no group prefix. */
+  group: string | null;
+  /** The launchd job's name — a bundle identifier for an app process. */
+  name: string;
+}
+
 /** The `alert` field of {@link ApnsPayload}, when it's a dictionary rather than a plain string. */
 export interface ApnsAlert {
   title?: string;
@@ -228,6 +238,8 @@ export interface NativeDeviceHandle {
   state(): number;
   deviceTypeIdentifier(): string;
   runtimeIdentifier(): string;
+  /** @internal Not part of the public API — see coresim.mm's RuntimeRootPath. */
+  runtimeRootPath(): string;
   boot(options?: Record<string, unknown>): Promise<void>;
   getBootStatus(): Promise<SimBootInfo | null>;
   shutdown(): Promise<void>;
@@ -263,6 +275,7 @@ export interface NativeDeviceHandle {
   addVideo(filePath: string): Promise<void>;
   getPasteboard(): Promise<string>;
   setPasteboard(content: string): Promise<void>;
+  getWebInspectorSocket(): Promise<string>;
   screenshot(options?: {format?: 'png' | 'jpeg'; displayId?: string; quality?: number}): Promise<Buffer>;
   getDisplays(): Promise<SimDisplayInfo[]>;
   spawn(path: string, options: SpawnOptions | undefined, onExit: NativeSpawnExitCallback): Promise<NativeSpawnResult>;

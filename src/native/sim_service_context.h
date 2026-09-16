@@ -34,4 +34,9 @@ NSString* RuntimeIdentifier(id runtime);
 NSString* RuntimeName(id runtime);
 NSString* RuntimeVersionString(id runtime);
 
+// -[SimRuntime root] -> the runtime bundle's `RuntimeRoot` directory, same as a spawned process's
+// own `$SIMULATOR_ROOT`. Used to resolve guest-OS-specific executables (e.g. `launchctl` — see
+// CLAUDE.md) before spawning them, since SimDevice's spawn API takes a literal path, no PATH search.
+NSString* RuntimeRootPath(id runtime);
+
 }  // namespace coresim

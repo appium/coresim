@@ -12,6 +12,7 @@
         "src/native/sim_device.mm",
         "src/native/tcc_privacy.mm",
         "src/native/sim_pasteboard.mm",
+        "src/native/sim_process.mm",
         "src/native/sim_screenshot.mm"
       ],
       "include_dirs": [
