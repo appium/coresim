@@ -37,12 +37,7 @@ export async function listProcesses(this: NativeSimctl, udid: string): Promise<S
     // The guest runtime ships its own launchctl, distinct from the host's /bin/launchctl (see
     // CLAUDE.md) — spawn() takes a literal path, so resolve it via RuntimeRoot ourselves.
     const launchctlPath = `${device.runtimeRootPath()}/bin/launchctl`;
-    // launchctl needs to stay attached to the guest's own launchd bootstrap namespace to talk to
-    // it at all (see CLAUDE.md/SpawnOptions.standalone) -- a standalone spawn is detached from it.
-    const proc = await this.spawnProcess(udid, launchctlPath, {
-      arguments: [launchctlPath, 'list'],
-      standalone: false,
-    });
+    const proc = await this.spawnProcess(udid, launchctlPath, {arguments: [launchctlPath, 'list']});
     let stdout = '';
     let stderr = '';
     proc.stdout.on('data', (chunk: Buffer) => {

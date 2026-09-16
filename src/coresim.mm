@@ -725,11 +725,14 @@ class NativeDevice : public Napi::ObjectWrap<NativeDevice> {
           // kSimDeviceSpawnStandalone (literal key "standalone" — confirmed via `strings` on the
           // framework binary) — see CLAUDE.md/SpawnOptions. Defaults to YES: without it,
           // CoreSimulator from Xcode 26.4+ never wires up the child's dyld shared-cache
-          // environment, aborting it with SIGABRT trying to load even libSystem.B.dylib. A caller
-          // can still opt out (e.g. listProcesses' own launchctl spawn, which needs to stay
-          // attached to the guest's launchd bootstrap namespace).
+          // environment, aborting it with SIGABRT trying to load even libSystem.B.dylib. Except for
+          // launchctl itself, which needs to stay attached to the guest's launchd bootstrap
+          // namespace to function at all — checked here (by executable name) rather than left to
+          // each caller, so any spawnProcess(..., ".../launchctl", ...) call gets this right, not
+          // just listProcesses' own internal one.
           if (!options[@"standalone"]) {
-            options[@"standalone"] = @YES;
+            BOOL isLaunchctl = [path.lastPathComponent isEqualToString:@"launchctl"];
+            options[@"standalone"] = @(!isLaunchctl);
           }
 
           void (^terminationHandler)(int) = ^(int status) {
