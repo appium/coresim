@@ -26,7 +26,7 @@ jobs:
         include:
         - xcodeVersion: '27.0-beta'
           platform: xcode-27
-        - xcodeVersion: '26.4'
+        - xcodeVersion: '26.5'
           platform: macos-26
         - xcodeVersion: '16.4'
           platform: macos-15
