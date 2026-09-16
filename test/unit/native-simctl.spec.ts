@@ -90,6 +90,16 @@ describe('NativeSimctl (read-only)', {timeout: 30000}, () => {
     await assert.rejects(() => sim.shutdownDevice('00000000-0000-0000-0000-000000000000'), /No simulator device found/);
   });
 
+  it("resolves a booted device's runtime root path, when one is booted", async () => {
+    const sim = new NativeSimctl();
+    const booted = (await sim.getDevices()).find((d) => d.state === SimDeviceState.Booted);
+    if (!booted) {
+      return;
+    }
+    const root = await sim.getRuntimeRootPath(booted.udid);
+    assert.match(root, /RuntimeRoot$/);
+  });
+
   it('rejects grantPermission with a typed error for an unsupported service name', async () => {
     // Validated before the device is even looked up, so no real device/udid is needed here — this
     // must still surface as a typed NativeSimError, not a plain Error, since callers rely on that.

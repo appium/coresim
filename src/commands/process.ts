@@ -7,7 +7,21 @@ import {runCatchingAsync} from '../utils/index.js';
 declare module '../native-simctl.js' {
   interface NativeSimctl {
     listProcesses(udid: string): Promise<SimProcessInfo[]>;
+    getRuntimeRootPath(udid: string): Promise<string>;
   }
+}
+
+/**
+ * Resolves the given (booted) device's own runtime bundle root — e.g.
+ * `.../iOS.simruntime/Contents/Resources/RuntimeRoot` — the same directory {@link listProcesses}
+ * resolves `launchctl` against. Needed by callers of {@link spawnProcess} that want to run a
+ * binary the guest runtime ships its own copy of (distinct from the host's own copy at the same
+ * name — see CLAUDE.md), since `spawnProcess` takes a literal path with no `$PATH` search.
+ *
+ * @param udid — UDID of the device to inspect; must be booted
+ */
+export async function getRuntimeRootPath(this: NativeSimctl, udid: string): Promise<string> {
+  return runCatchingAsync(async () => (await this._findDevice(udid)).runtimeRootPath());
 }
 
 /**

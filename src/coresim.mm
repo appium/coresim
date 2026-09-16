@@ -185,7 +185,6 @@ class NativeDevice : public Napi::ObjectWrap<NativeDevice> {
       return Napi::String::New(info.Env(), coresim::RuntimeIdentifier(runtime).UTF8String);
     });
   }
-  // @internal — not part of the public NativeSimctl API (see types.ts's NativeDeviceHandle).
   Napi::Value RuntimeRootPath(const Napi::CallbackInfo& info) {
     return CatchToJs(info.Env(), [&]() -> Napi::Value {
       id runtime = DeviceRuntime(device_);

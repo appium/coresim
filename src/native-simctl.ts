@@ -38,7 +38,7 @@ import {addMedia, addPhoto, addVideo} from './commands/media.js';
 import {shake} from './commands/misc.js';
 import {getPasteboard, setPasteboard} from './commands/pasteboard.js';
 import {getPermission, grantPermission, resetPermission, revokePermission} from './commands/permissions.js';
-import {listProcesses} from './commands/process.js';
+import {getRuntimeRootPath, listProcesses} from './commands/process.js';
 import {getDisplays, getScreenshot} from './commands/screenshot.js';
 import {spawnProcess} from './commands/spawn.js';
 import {
@@ -230,6 +230,7 @@ Object.assign(NativeSimctl.prototype, {
 
   // process
   listProcesses,
+  getRuntimeRootPath,
 
   // darwin notification
   getDarwinNotificationState,
