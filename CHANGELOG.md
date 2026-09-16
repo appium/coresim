@@ -1,3 +1,9 @@
+## [1.1.1](https://github.com/appium/coresim/compare/v1.1.0...v1.1.1) (2026-09-16)
+
+### Bug Fixes
+
+* Pass correct stream handle ([#11](https://github.com/appium/coresim/issues/11)) ([4584776](https://github.com/appium/coresim/commit/4584776f1d143bc709233cdfa2a557eb3bb99bd7))
+
 ## [1.1.0](https://github.com/appium/coresim/compare/v1.0.1...v1.1.0) (2026-09-16)
 
 ### Features
