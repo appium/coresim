@@ -1,3 +1,9 @@
+## [1.0.1](https://github.com/appium/coresim/compare/v1.0.0...v1.0.1) (2026-09-16)
+
+### Miscellaneous Chores
+
+* Fix repository url ([e579041](https://github.com/appium/coresim/commit/e579041fb922428e126f9031c9fc542b64c53c12))
+
 ## 1.0.0 (2026-09-16)
 
 ### Features
