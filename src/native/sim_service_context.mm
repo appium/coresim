@@ -28,6 +28,16 @@ id DefaultDeviceSet(id serviceContext, NSError** error) {
   });
 }
 
+id DeviceSetWithPath(id serviceContext, NSString* path, NSError** error) {
+  static const std::string kSelectorName = "deviceSetWithPath:error:";
+  RequireSelector(serviceContext, kSelectorName);
+  SEL selector = SelectorNamed(kSelectorName);
+  return SafeInvoke([&] {
+    using Fn = id (*)(id, SEL, NSString*, NSError**);
+    return ((Fn)objc_msgSend)(serviceContext, selector, path, error);
+  });
+}
+
 NSArray* SupportedDeviceTypes(id serviceContext) {
   static const std::string kSelectorName = "supportedDeviceTypes";
   RequireSelector(serviceContext, kSelectorName);

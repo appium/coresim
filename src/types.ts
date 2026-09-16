@@ -291,6 +291,7 @@ export interface NativeDeviceSetHandle {
 /** A `SimServiceContext`, wrapped by `coresim.mm`'s `NativeServiceContext`. */
 export interface NativeServiceContextHandle {
   defaultDeviceSet(): Promise<NativeDeviceSetHandle>;
+  deviceSetWithPath(path: string): Promise<NativeDeviceSetHandle>;
   supportedDeviceTypes(): Promise<SimDeviceTypeInfo[]>;
   supportedRuntimes(): Promise<SimRuntimeInfo[]>;
 }
