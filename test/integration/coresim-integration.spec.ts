@@ -26,15 +26,7 @@ import {
   UICATALOG_BUNDLE_ID,
 } from '../fixtures.js';
 
-// GitHub Actions sets this for every job. Spawning a process through CoreSimulator's own launch
-// mechanism has been observed, intermittently and on more than one Xcode/macOS matrix leg, to
-// abort the spawned process almost immediately (SIGABRT) on hosted CI runners — not reproducible
-// against a real simulator on a real machine. Skipped only in CI until that's root-caused, rather
-// than letting an unrelated PR get blocked by it.
 const IS_CI = Boolean(process.env.CI);
-const SKIP_UNSTABLE_IN_CI = IS_CI
-  ? 'unstable in CI: spawned processes have intermittently been observed aborting immediately on hosted runners'
-  : false;
 // This suite otherwise shares a single boot cycle per Xcode version (see integration-test.yml) —
 // shutdownAllDevices() needs its own second throwaway device booted/deleted just to exercise it,
 // which would materially add to CI's already-expensive real-boot cost for one extra assertion.
@@ -500,7 +492,7 @@ describe('NativeSimctl integration', () => {
         });
       }
 
-      it('spawns a process with live stdout and reports a clean exit', {skip: SKIP_UNSTABLE_IN_CI}, async () => {
+      it('spawns a process with live stdout and reports a clean exit', async () => {
         const proc = await sim.spawnProcess(device!.udid, '/bin/echo', {
           arguments: ['/bin/echo', 'hello-from-integration-test'],
         });
@@ -524,7 +516,7 @@ describe('NativeSimctl integration', () => {
         assert.match(stdout, /hello-from-integration-test/);
       });
 
-      it('kills a long-running spawned process', {skip: SKIP_UNSTABLE_IN_CI}, async () => {
+      it('kills a long-running spawned process', async () => {
         const proc = await sim.spawnProcess(device!.udid, '/bin/sleep', {arguments: ['/bin/sleep', '30']});
         assert.ok(proc.running);
         const exitPromise = once(proc, 'exit');

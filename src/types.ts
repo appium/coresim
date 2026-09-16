@@ -131,16 +131,24 @@ export interface ScreenshotOptions {
  * Options for `NativeSimctl.spawnProcess`, passed through to CoreSimulator's
  * `spawnWithPath:options:terminationQueue:terminationHandler:error:`. Only keys confirmed
  * empirically (see CLAUDE.md) are typed here. CoreSimulator also recognizes
- * `binpref`/`standalone`/`wait_for_debugger`/`enableCheckedAllocations`/`stdin`/`stdout`/`stderr`,
- * but the latter three's expected value shape (`NSFileHandle`/XPC file descriptor/`NSNumber`,
- * never a path string) isn't yet confirmed safe — passing the wrong type crashes the whole process
- * instead of throwing a catchable error (see CLAUDE.md) — so they're deliberately omitted here.
+ * `binpref`/`wait_for_debugger`/`enableCheckedAllocations`/`stdin`/`stdout`/`stderr`, but the
+ * latter three's expected value shape (`NSFileHandle`/XPC file descriptor/`NSNumber`, never a path
+ * string) isn't yet confirmed safe — passing the wrong type crashes the whole process instead of
+ * throwing a catchable error (see CLAUDE.md) — so they're deliberately omitted here.
  */
 export interface SpawnOptions {
   /** Fully replaces argv, including argv[0] — `path` only selects the executable. */
   arguments?: string[];
   /** Merged additively into the spawned process's environment. */
   environment?: Record<string, string>;
+  /**
+   * Defaults to `true` — required for CoreSimulator from Xcode 26.4+ to wire up the child's dyld
+   * shared-cache environment (see CLAUDE.md); without it, that CoreSimulator aborts the child with
+   * SIGABRT trying to load even `libSystem.B.dylib`. Set to `false` only to spawn something that
+   * must stay attached to the guest's own launchd bootstrap namespace (e.g. `launchctl` itself, as
+   * `listProcesses` does) — a standalone spawn is detached from it.
+   */
+  standalone?: boolean;
 }
 
 /** One running process/launchd job inside a device, as reported by `NativeSimctl.listProcesses`. */

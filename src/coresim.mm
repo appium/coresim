@@ -722,6 +722,15 @@ class NativeDevice : public Napi::ObjectWrap<NativeDevice> {
           NSMutableDictionary* options = [userOptions mutableCopy];
           options[@"stdout"] = @(stdoutPipe.fileHandleForWriting.fileDescriptor);
           options[@"stderr"] = @(stderrPipe.fileHandleForWriting.fileDescriptor);
+          // kSimDeviceSpawnStandalone (literal key "standalone" — confirmed via `strings` on the
+          // framework binary) — see CLAUDE.md/SpawnOptions. Defaults to YES: without it,
+          // CoreSimulator from Xcode 26.4+ never wires up the child's dyld shared-cache
+          // environment, aborting it with SIGABRT trying to load even libSystem.B.dylib. A caller
+          // can still opt out (e.g. listProcesses' own launchctl spawn, which needs to stay
+          // attached to the guest's launchd bootstrap namespace).
+          if (!options[@"standalone"]) {
+            options[@"standalone"] = @YES;
+          }
 
           void (^terminationHandler)(int) = ^(int status) {
             // Confirmed empirically (see CLAUDE.md): `status` is a raw wait(2)-style status, not a
