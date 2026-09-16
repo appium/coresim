@@ -1,3 +1,9 @@
+## [1.1.0](https://github.com/appium/coresim/compare/v1.0.1...v1.1.0) (2026-09-16)
+
+### Features
+
+* Expose getRuntimeRootPath publicly ([#10](https://github.com/appium/coresim/issues/10)) ([00725ee](https://github.com/appium/coresim/commit/00725eec8cbe46be020eda18a11d30125552b11a))
+
 ## [1.0.1](https://github.com/appium/coresim/compare/v1.0.0...v1.0.1) (2026-09-16)
 
 ### Miscellaneous Chores
