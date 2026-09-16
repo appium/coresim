@@ -85,6 +85,33 @@ describe('NativeSimctl (read-only)', {timeout: 30000}, () => {
     assert.notStrictEqual(apps, null);
   });
 
+  it('does not crash the process when spawnProcess options include an explicit undefined value, when one is booted', async () => {
+    // Regression test: an options object like {arguments: [...], environment: undefined} (easy to
+    // end up with from a conditional spread) used to convert `environment`'s value to NSNull rather
+    // than omitting the key, which crashed the whole process inside CoreSimulator's own
+    // `_spawnFromLaunchdWithPath:options:` — not just this call (see JsValueToNSObject in
+    // value_bridge.mm). A test that merely "doesn't crash" can't assert on a rejection, so this
+    // also checks the process actually ran to a clean exit.
+    const sim = new NativeSimctl();
+    const booted = (await sim.getDevices()).find((d) => d.state === SimDeviceState.Booted);
+    if (!booted) {
+      return;
+    }
+    const proc = await sim.spawnProcess(booted.udid, '/bin/echo', {
+      arguments: ['/bin/echo', 'no-crash'],
+      environment: undefined,
+    });
+    let stdout = '';
+    proc.stdout.on('data', (chunk: Buffer) => {
+      stdout += chunk;
+    });
+    const [code] = await new Promise<[number | null, NodeJS.Signals | null]>((resolve) =>
+      proc.once('exit', (c, s) => resolve([c, s])),
+    );
+    assert.strictEqual(code, 0);
+    assert.strictEqual(stdout, 'no-crash\n');
+  });
+
   it('rejects with a typed, catchable error instead of crashing on an unknown device UDID', async () => {
     const sim = new NativeSimctl();
     await assert.rejects(() => sim.shutdownDevice('00000000-0000-0000-0000-000000000000'), /No simulator device found/);
