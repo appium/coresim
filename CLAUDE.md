@@ -119,7 +119,8 @@ toolchain (`make` and `xcodebuild`).
 - **`listProcesses` must spawn the guest runtime's own `launchctl`, not the host's
   `/bin/launchctl`** — the host binary exits 5 (wrong launchd). `simctl spawn` resolves a bare
   `launchctl` against the guest's `$PATH`; our spawn API takes a literal path, so we resolve
-  `<SimRuntime.root>/bin/launchctl` ourselves via `RuntimeRootPath` (internal-only).
+  `<SimRuntime.root>/bin/launchctl` ourselves via `RuntimeRootPath`, also exposed publicly as
+  `getRuntimeRootPath`.
 
 ## Known gaps
 

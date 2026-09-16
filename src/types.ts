@@ -238,7 +238,6 @@ export interface NativeDeviceHandle {
   state(): number;
   deviceTypeIdentifier(): string;
   runtimeIdentifier(): string;
-  /** @internal Not part of the public API — see coresim.mm's RuntimeRootPath. */
   runtimeRootPath(): string;
   boot(options?: Record<string, unknown>): Promise<void>;
   getBootStatus(): Promise<SimBootInfo | null>;

@@ -50,8 +50,18 @@ NSObject* JsValueToNSObject(Napi::Env env, Napi::Value value) {
     NSMutableDictionary* result = [NSMutableDictionary dictionaryWithCapacity:keys.Length()];
     for (uint32_t i = 0; i < keys.Length(); i++) {
       Napi::Value key = keys.Get(i);
+      Napi::Value propertyValue = object.Get(key);
+      // Matches JSON.stringify's own undefined-property handling: an object option consumers built
+      // conditionally (`{...(x && {x})}`-style) can easily end up with an explicit `undefined`
+      // value instead of the key being absent — converting that to NSNull rather than dropping it
+      // has crashed the whole process before (some CoreSimulator option dictionaries, e.g.
+      // spawnWithPath:'s "environment", assume a present key is a real NSDictionary and don't
+      // tolerate NSNull; see CLAUDE.md's note on exceptions raised outside SafeInvoke's guard).
+      if (propertyValue.IsUndefined()) {
+        continue;
+      }
       NSString* nsKey = ToNSString(key.As<Napi::String>().Utf8Value());
-      result[nsKey] = JsValueToNSObject(env, object.Get(key));
+      result[nsKey] = JsValueToNSObject(env, propertyValue);
     }
     return result;
   }
