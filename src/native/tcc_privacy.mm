@@ -136,7 +136,8 @@ bool CommitOrRollback(sqlite3* db, bool commit, NSError** error) {
 
 }  // namespace
 
-BOOL SetTCCAccess(NSString* dataPath, NSString* service, NSString* bundleId, BOOL granted, NSError** error) {
+BOOL SetTCCAccess(NSString* dataPath, NSString* service, NSString* bundleId, TCCAuthStatus desiredStatus,
+                   NSError** error) {
   sqlite3* db = OpenDatabase(dataPath, error);
   if (!db) {
     return NO;
@@ -149,9 +150,9 @@ BOOL SetTCCAccess(NSString* dataPath, NSString* service, NSString* bundleId, BOO
   if (success) {
     if (HasAuthValueColumn(db)) {
       // `kTCCServicePhotos` rows use auth_version 2 (supports the "limited" library access
-      // introduced alongside it); every other service uses version 1. Not exposing "limited"
-      // as a grantable status here — only plain granted/denied, matching grantPermission's BOOL.
+      // introduced alongside it); every other service uses version 1.
       BOOL isPhotos = [service isEqualToString:@"kTCCServicePhotos"];
+      int authValue = desiredStatus == kTCCAuthGranted ? 2 : desiredStatus == kTCCAuthLimited ? 3 : 0;
       success = ExecuteStatement(
           db,
           "INSERT INTO access (service, client, client_type, auth_value, auth_reason, auth_version, flags) "
@@ -159,17 +160,19 @@ BOOL SetTCCAccess(NSString* dataPath, NSString* service, NSString* bundleId, BOO
           [&](sqlite3_stmt* stmt) {
             BindText(stmt, 1, service);
             BindText(stmt, 2, bundleId);
-            sqlite3_bind_int(stmt, 3, granted ? 2 : 0);
+            sqlite3_bind_int(stmt, 3, authValue);
             sqlite3_bind_int(stmt, 4, isPhotos ? 2 : 1);
           },
           error);
     } else {
+      // Pre-iOS 14 schema has no auth_value column, so "limited" collapses to a plain grant here.
+      BOOL allowed = desiredStatus != kTCCAuthDenied;
       success = ExecuteStatement(
           db, "REPLACE INTO access (service, client, client_type, allowed, prompt_count) VALUES (?, ?, 0, ?, 1)",
           [&](sqlite3_stmt* stmt) {
             BindText(stmt, 1, service);
             BindText(stmt, 2, bundleId);
-            sqlite3_bind_int(stmt, 3, granted ? 1 : 0);
+            sqlite3_bind_int(stmt, 3, allowed ? 1 : 0);
           },
           error);
     }

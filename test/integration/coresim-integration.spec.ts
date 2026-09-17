@@ -345,6 +345,34 @@ describe('NativeSimctl integration', () => {
         assert.strictEqual(await sim.getPermission(device!.udid, 'contacts', bundleId), 'unset');
       });
 
+      it('grants, revokes, and resets faceid and usertracking, two services with no dedicated setter', async () => {
+        const bundleId = 'com.appium.coresim.doesnotexist';
+
+        for (const service of ['faceid', 'usertracking'] as const) {
+          await sim.grantPermission(device!.udid, service, bundleId);
+          assert.strictEqual(await sim.getPermission(device!.udid, service, bundleId), 'granted');
+
+          await sim.revokePermission(device!.udid, service, bundleId);
+          assert.strictEqual(await sim.getPermission(device!.udid, service, bundleId), 'denied');
+
+          await sim.resetPermission(device!.udid, service, bundleId);
+          assert.strictEqual(await sim.getPermission(device!.udid, service, bundleId), 'unset');
+        }
+      });
+
+      it('grants "limited" (selected photos) access, exclusively for the photos service', async () => {
+        const bundleId = 'com.appium.coresim.doesnotexist';
+
+        await sim.grantPermission(device!.udid, 'photos', bundleId, 'limited');
+        assert.strictEqual(await sim.getPermission(device!.udid, 'photos', bundleId), 'limited');
+        await sim.resetPermission(device!.udid, 'photos', bundleId);
+
+        await assert.rejects(
+          () => sim.grantPermission(device!.udid, 'camera', bundleId, 'limited'),
+          /'limited' is only a valid status for the 'photos' service/,
+        );
+      });
+
       it('adds media to the Photos library', async () => {
         const photoPath = await createTestPhoto();
         try {
