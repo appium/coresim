@@ -1,3 +1,9 @@
+## [1.2.0](https://github.com/appium/coresim/compare/v1.1.1...v1.2.0) (2026-09-17)
+
+### Features
+
+* Support more permission types ([#12](https://github.com/appium/coresim/issues/12)) ([164cb7d](https://github.com/appium/coresim/commit/164cb7d4d4bbc9029f18ad137f1215d82fa3ab79))
+
 ## [1.1.1](https://github.com/appium/coresim/compare/v1.1.0...v1.1.1) (2026-09-16)
 
 ### Bug Fixes
