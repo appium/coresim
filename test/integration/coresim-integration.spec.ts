@@ -301,19 +301,34 @@ describe('NativeSimctl integration', () => {
 
       it('delivers a simulated push notification', async (t) => {
         // Confirmed to work regardless of whether the target bundle is actually installed — except
-        // on iOS 27 (beta), where CoreSimulator's push daemon currently rejects every target,
-        // installed and launched or not, with "Source is not authorized" (UNErrorDomain code 2003).
-        // Reproduced identically via `xcrun simctl push` directly, so this is a platform-side beta
-        // bug, not something this addon (or this test) can work around.
-        try {
-          await sim.pushNotification(device!.udid, 'com.appium.coresim.doesnotexist', {aps: {alert: 'hi'}});
-        } catch (err) {
-          if (err instanceof NativeSimOperationError && err.domain === 'UNErrorDomain' && err.code === 2003) {
-            return t.skip(
-              `iOS 27 beta: CoreSimulator's push daemon currently rejects every target ("Source is not authorized")`,
-            );
-          }
-          throw err;
+        // on iOS 27, where CoreSimulator's push daemon currently rejects every target, installed
+        // and launched or not, with "Source is not authorized" (UNErrorDomain code 2003) — and
+        // only after sitting on the call for several minutes first (observed up to ~7 minutes in
+        // CI). Reproduced identically via `xcrun simctl push` directly (present since the 27.0
+        // beta and still present in the GM release), so this is a platform-side bug, not something
+        // this addon (or this test) can work around. The long hang before the eventual rejection
+        // is itself part of that bug, so it's bounded here rather than spent for real each run.
+        const PUSH_TIMEOUT_MS = 30000;
+        const pushed = sim.pushNotification(device!.udid, 'com.appium.coresim.doesnotexist', {aps: {alert: 'hi'}}).then(
+          () => 'delivered' as const,
+          (err) => {
+            if (err instanceof NativeSimOperationError && err.domain === 'UNErrorDomain' && err.code === 2003) {
+              return 'unauthorized' as const;
+            }
+            throw err;
+          },
+        );
+        // Left running in the background on a timeout, rather than awaited — its own rejection
+        // handler above already keeps it from surfacing as an unhandled rejection later.
+        pushed.catch(() => {});
+        const timedOut = new Promise<'timed-out'>((resolve) =>
+          setTimeout(() => resolve('timed-out'), PUSH_TIMEOUT_MS).unref(),
+        );
+        const result = await Promise.race([pushed, timedOut]);
+        if (result === 'unauthorized' || result === 'timed-out') {
+          return t.skip(
+            `iOS 27: CoreSimulator's push daemon currently rejects every target ("Source is not authorized"), often only after several minutes`,
+          );
         }
       });
 
@@ -343,6 +358,34 @@ describe('NativeSimctl integration', () => {
 
         await sim.resetPermission(device!.udid, 'contacts', bundleId);
         assert.strictEqual(await sim.getPermission(device!.udid, 'contacts', bundleId), 'unset');
+      });
+
+      it('grants, revokes, and resets faceid and usertracking, two services with no dedicated setter', async () => {
+        const bundleId = 'com.appium.coresim.doesnotexist';
+
+        for (const service of ['faceid', 'usertracking'] as const) {
+          await sim.grantPermission(device!.udid, service, bundleId);
+          assert.strictEqual(await sim.getPermission(device!.udid, service, bundleId), 'granted');
+
+          await sim.revokePermission(device!.udid, service, bundleId);
+          assert.strictEqual(await sim.getPermission(device!.udid, service, bundleId), 'denied');
+
+          await sim.resetPermission(device!.udid, service, bundleId);
+          assert.strictEqual(await sim.getPermission(device!.udid, service, bundleId), 'unset');
+        }
+      });
+
+      it('grants "limited" (selected photos) access, exclusively for the photos service', async () => {
+        const bundleId = 'com.appium.coresim.doesnotexist';
+
+        await sim.grantPermission(device!.udid, 'photos', bundleId, 'limited');
+        assert.strictEqual(await sim.getPermission(device!.udid, 'photos', bundleId), 'limited');
+        await sim.resetPermission(device!.udid, 'photos', bundleId);
+
+        await assert.rejects(
+          () => sim.grantPermission(device!.udid, 'camera', bundleId, 'limited'),
+          /'limited' is only a valid status for the 'photos' service/,
+        );
       });
 
       it('adds media to the Photos library', async () => {

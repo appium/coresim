@@ -137,6 +137,16 @@ describe('NativeSimctl (read-only)', {timeout: 30000}, () => {
     );
   });
 
+  it("rejects grantPermission's 'limited' status for any service other than photos", async () => {
+    // Also validated before the device lookup — see above.
+    const sim = new NativeSimctl();
+    await assert.rejects(
+      () => sim.grantPermission('00000000-0000-0000-0000-000000000000', 'camera', 'com.example.app', 'limited'),
+      (err: unknown) =>
+        err instanceof NativeSimError && /only a valid status for the 'photos' service/.test((err as Error).message),
+    );
+  });
+
   it('rejects sendBiometricMatch for an inherited property name, not just an unlisted own one', async () => {
     // Validated before the device is even looked up, so no real device/udid is needed here.
     // Object.prototype members (toString, constructor, __proto__, ...) are truthy on a plain

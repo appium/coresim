@@ -4,7 +4,12 @@ import {runCatchingAsync} from '../utils/index.js';
 
 declare module '../native-simctl.js' {
   interface NativeSimctl {
-    grantPermission(udid: string, service: SimPermissionService, bundleId: string): Promise<void>;
+    grantPermission(
+      udid: string,
+      service: SimPermissionService,
+      bundleId: string,
+      status?: 'granted' | 'limited',
+    ): Promise<void>;
     revokePermission(udid: string, service: SimPermissionService, bundleId: string): Promise<void>;
     resetPermission(udid: string, service: SimPermissionService, bundleId: string): Promise<void>;
     getPermission(udid: string, service: SimPermissionService, bundleId: string): Promise<SimPermissionStatus>;
@@ -19,16 +24,22 @@ declare module '../native-simctl.js' {
  * @param udid — UDID of the target device
  * @param service — permission to grant, e.g. `"camera"`, `"contacts"`, `"photos"`
  * @param bundleId — bundle identifier of the app the permission applies to
+ * @param status — defaults to `'granted'`. `'limited'` ("selected photos" access) is only valid
+ * for the `photos` service.
  */
 export async function grantPermission(
   this: NativeSimctl,
   udid: string,
   service: SimPermissionService,
   bundleId: string,
+  status: 'granted' | 'limited' = 'granted',
 ): Promise<void> {
   return runCatchingAsync(async () => {
+    if (status === 'limited' && service !== 'photos') {
+      throw new Error(`'limited' is only a valid status for the 'photos' service, not '${service}'`);
+    }
     const tccIdentifier = toTCCIdentifier(service);
-    return (await this._findDevice(udid)).grantPermission(tccIdentifier, bundleId);
+    return (await this._findDevice(udid)).grantPermission(tccIdentifier, bundleId, status);
   });
 }
 
@@ -100,6 +111,7 @@ const SERVICE_TO_TCC_IDENTIFIER: Record<SimPermissionService, string> = {
   calendar: 'kTCCServiceCalendar',
   camera: 'kTCCServiceCamera',
   contacts: 'kTCCServiceAddressBook',
+  faceid: 'kTCCServiceFaceID',
   health: 'kTCCServiceMSO',
   homekit: 'kTCCServiceWillow',
   medialibrary: 'kTCCServiceMediaLibrary',
@@ -109,6 +121,7 @@ const SERVICE_TO_TCC_IDENTIFIER: Record<SimPermissionService, string> = {
   reminders: 'kTCCServiceReminders',
   siri: 'kTCCServiceSiri',
   speech: 'kTCCServiceSpeechRecognition',
+  usertracking: 'kTCCServiceUserTracking',
 };
 
 function toTCCIdentifier(service: SimPermissionService): string {

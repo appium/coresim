@@ -454,20 +454,28 @@ class NativeDevice : public Napi::ObjectWrap<NativeDevice> {
     });
   }
 
-  Napi::Value GrantPermission(const Napi::CallbackInfo& info) { return SetPermission(info, YES); }
-  Napi::Value RevokePermission(const Napi::CallbackInfo& info) { return SetPermission(info, NO); }
+  // `grantPermission`'s optional 3rd JS argument is a status override ("limited"), used only for
+  // kTCCServicePhotos's "selected photos" access — see commands/permissions.ts.
+  Napi::Value GrantPermission(const Napi::CallbackInfo& info) {
+    TCCAuthStatus desiredStatus = kTCCAuthGranted;
+    if (info.Length() > 2 && info[2].IsString() && info[2].As<Napi::String>().Utf8Value() == "limited") {
+      desiredStatus = kTCCAuthLimited;
+    }
+    return SetPermission(info, desiredStatus);
+  }
+  Napi::Value RevokePermission(const Napi::CallbackInfo& info) { return SetPermission(info, kTCCAuthDenied); }
 
   // Writes directly to the simulator's own TCC.db instead of calling CoreSimulator's
   // setPrivacyAccessForService:bundleID:granted:error: — that private method requires the calling
   // process to hold an entitlement no ordinary npm package can obtain (see CLAUDE.md).
-  Napi::Value SetPermission(const Napi::CallbackInfo& info, BOOL granted) {
+  Napi::Value SetPermission(const Napi::CallbackInfo& info, TCCAuthStatus desiredStatus) {
     id device = device_;
     NSString* service = @(info[0].As<Napi::String>().Utf8Value().c_str());
     NSString* bundleId = @(info[1].As<Napi::String>().Utf8Value().c_str());
-    return RunAsyncVoid(info.Env(), [device, service, bundleId, granted]() {
+    return RunAsyncVoid(info.Env(), [device, service, bundleId, desiredStatus]() {
       NSError* error = nil;
       NSString* dataPath = coresim::DeviceDataPath(device);
-      ThrowIfFailed(coresim::SetTCCAccess(dataPath, service, bundleId, granted, &error), error);
+      ThrowIfFailed(coresim::SetTCCAccess(dataPath, service, bundleId, desiredStatus, &error), error);
     });
   }
 

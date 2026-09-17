@@ -73,8 +73,7 @@ export interface SimBootInfo {
  * Result of `NativeSimctl.getPermission` — mirrors the TCC database's own auth states rather than
  * a plain boolean, since `'unset'` (never prompted/decided) and `'denied'` (explicitly refused)
  * are different states with different UI implications. `'limited'` only applies to `photos`
- * ("selected photos" access) and is never produced by `grantPermission` itself, but can already be
- * present if something else set it.
+ * ("selected photos" access).
  */
 export type SimPermissionStatus = 'unset' | 'denied' | 'granted' | 'limited';
 
@@ -88,6 +87,7 @@ export type SimPermissionService =
   | 'calendar'
   | 'camera'
   | 'contacts'
+  | 'faceid'
   | 'health'
   | 'homekit'
   | 'medialibrary'
@@ -96,7 +96,8 @@ export type SimPermissionService =
   | 'photos'
   | 'reminders'
   | 'siri'
-  | 'speech';
+  | 'speech'
+  | 'usertracking';
 
 /**
  * A device's renderable display, as returned by `NativeSimctl.getDisplays()`.
@@ -270,7 +271,7 @@ export interface NativeDeviceHandle {
   setIncreaseContrast(enabled: boolean): Promise<void>;
   getContentSize(): Promise<number>;
   setContentSize(category: number): Promise<void>;
-  grantPermission(service: string, bundleId: string): Promise<void>;
+  grantPermission(service: string, bundleId: string, status?: 'granted' | 'limited'): Promise<void>;
   revokePermission(service: string, bundleId: string): Promise<void>;
   resetPermission(service: string, bundleId: string): Promise<void>;
   getPermission(service: string, bundleId: string): Promise<SimPermissionStatus>;
