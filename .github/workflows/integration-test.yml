@@ -4,9 +4,6 @@ on:
   pull_request:
     branches: [ main ]
 
-# A new push to the same PR cancels whatever integration run is still in flight for it, instead of
-# both running to completion — real simulator boots make this suite expensive enough that letting
-# a superseded run keep going is pure waste.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -16,12 +13,6 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Mirrors appium-ios-simulator's functional-test.yml matrix: pairs a real Xcode version
-        # with the oldest macOS runner image known to support it (an arm64 image — see
-        # binding.gyp), covering both ends of the Xcode/CoreSimulator versions this addon's
-        # dynamically-resolved selectors need to keep working across, plus the newest release to
-        # catch breakage early. 27.0 went GM (was '27.0-beta' until it did) but standard macos-26
-        # images still don't carry it, so it still needs the org's xcode-27 runner image.
         include:
         - xcodeVersion: '27.0'
           platform: xcode-27
