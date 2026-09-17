@@ -19,12 +19,11 @@ jobs:
         # Mirrors appium-ios-simulator's functional-test.yml matrix: pairs a real Xcode version
         # with the oldest macOS runner image known to support it (an arm64 image — see
         # binding.gyp), covering both ends of the Xcode/CoreSimulator versions this addon's
-        # dynamically-resolved selectors need to keep working across, plus the upcoming beta to
-        # catch breakage before it ships stable. The beta entry mirrors WebDriverAgent's
-        # functional-test.yml: standard macos-26 images don't carry it, so it needs the org's
-        # xcode-27 runner image and setup-xcode's hyphenated beta version spec.
+        # dynamically-resolved selectors need to keep working across, plus the newest release to
+        # catch breakage early. 27.0 went GM (was '27.0-beta' until it did) but standard macos-26
+        # images still don't carry it, so it still needs the org's xcode-27 runner image.
         include:
-        - xcodeVersion: '27.0-beta'
+        - xcodeVersion: '27.0'
           platform: xcode-27
         - xcodeVersion: '26.5'
           platform: macos-26

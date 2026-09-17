@@ -24,7 +24,7 @@ enum TCCAuthStatus {
 // descriptive NSError if the device has never been booted (TCC.db doesn't exist yet) or the
 // database can't be written to.
 BOOL SetTCCAccess(NSString* dataPath, NSString* service, NSString* bundleId, TCCAuthStatus desiredStatus,
-                   NSError** error);
+                  NSError** error);
 
 // Resets a previously granted/revoked permission back to its default (unprompted, "unset") state
 // by deleting its row from TCC.db, if one exists.

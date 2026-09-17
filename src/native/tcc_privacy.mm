@@ -137,7 +137,7 @@ bool CommitOrRollback(sqlite3* db, bool commit, NSError** error) {
 }  // namespace
 
 BOOL SetTCCAccess(NSString* dataPath, NSString* service, NSString* bundleId, TCCAuthStatus desiredStatus,
-                   NSError** error) {
+                  NSError** error) {
   sqlite3* db = OpenDatabase(dataPath, error);
   if (!db) {
     return NO;
