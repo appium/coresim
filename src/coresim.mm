@@ -730,17 +730,15 @@ class NativeDevice : public Napi::ObjectWrap<NativeDevice> {
           NSMutableDictionary* options = [userOptions mutableCopy];
           options[@"stdout"] = @(stdoutPipe.fileHandleForWriting.fileDescriptor);
           options[@"stderr"] = @(stderrPipe.fileHandleForWriting.fileDescriptor);
-          // kSimDeviceSpawnStandalone (literal key "standalone" — confirmed via `strings` on the
-          // framework binary) — see CLAUDE.md/SpawnOptions. Defaults to YES: without it,
-          // CoreSimulator from Xcode 26.4+ never wires up the child's dyld shared-cache
-          // environment, aborting it with SIGABRT trying to load even libSystem.B.dylib. Except for
-          // launchctl itself, which needs to stay attached to the guest's launchd bootstrap
-          // namespace to function at all — checked here (by executable name) rather than left to
-          // each caller, so any spawnProcess(..., ".../launchctl", ...) call gets this right, not
-          // just listProcesses' own internal one.
+          // kSimDeviceSpawnStandalone — see CLAUDE.md/SpawnOptions. Defaults to YES except for
+          // launchctl and defaults, which need to stay attached to the guest's launchd bootstrap
+          // namespace to work (launchctl) / have their writes observed live (defaults) — checked
+          // here by executable name so every caller gets it right, not just our own.
           if (!options[@"standalone"]) {
-            BOOL isLaunchctl = [path.lastPathComponent isEqualToString:@"launchctl"];
-            options[@"standalone"] = @(!isLaunchctl);
+            NSString* lastComponent = path.lastPathComponent;
+            BOOL needsBootstrapAttachment =
+                [lastComponent isEqualToString:@"launchctl"] || [lastComponent isEqualToString:@"defaults"];
+            options[@"standalone"] = @(!needsBootstrapAttachment);
           }
 
           void (^terminationHandler)(int) = ^(int status) {

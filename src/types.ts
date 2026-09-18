@@ -145,9 +145,9 @@ export interface SpawnOptions {
   /**
    * Defaults to `true` — required for CoreSimulator from Xcode 26.4+ to wire up the child's dyld
    * shared-cache environment (see CLAUDE.md); without it, that CoreSimulator aborts the child with
-   * SIGABRT trying to load even `libSystem.B.dylib`. Defaults to `false` when `path` is `launchctl`
-   * itself, which needs to stay attached to the guest's own launchd bootstrap namespace to function
-   * at all — a standalone spawn is detached from it. Set explicitly to override either default.
+   * SIGABRT trying to load even `libSystem.B.dylib`. Defaults to `false` for `launchctl`/`defaults`,
+   * which need to stay attached to the guest's own launchd bootstrap namespace to work/have their
+   * writes observed live. Set explicitly to override either default.
    */
   standalone?: boolean;
 }

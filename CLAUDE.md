@@ -95,10 +95,11 @@ toolchain (`make` and `xcodebuild`).
   (`kSimDeviceSpawnStandalone`, confirmed via `strings` on the framework binary — no public header
   exists). Without it, CoreSimulator from Xcode 26.4+ never wires up the spawned process's dyld
   shared-cache environment, aborting it with SIGABRT trying to load even `libSystem.B.dylib` —
-  reproduced only on hosted CI (never locally), diagnosed from the child's own crash report. The
-  one exception is `launchctl` itself, defaulted to `false` (checked by executable name in
-  coresim.mm, not left to callers) since it needs to stay attached to the guest's launchd bootstrap
-  namespace to function at all — a standalone spawn is detached from it.
+  reproduced only on hosted CI (never locally), diagnosed from the child's own crash report. Two
+  exceptions default to `false` (checked by executable name in coresim.mm, not left to callers),
+  since a standalone spawn is detached from the guest's launchd bootstrap namespace: `launchctl`,
+  which doesn't function at all without it, and `defaults`, whose writes otherwise land on disk but
+  are never observed by already-running guest processes (e.g. Settings.app).
 - **Privacy permissions (`grantPermission`/`revokePermission`/`resetPermission`) are implemented by
   writing directly to the simulator's own TCC (privacy) SQLite database**, not by calling
   CoreSimulator's private privacy API — that API requires a process entitlement no ordinary npm
