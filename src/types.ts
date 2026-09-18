@@ -142,14 +142,6 @@ export interface SpawnOptions {
   arguments?: string[];
   /** Merged additively into the spawned process's environment. */
   environment?: Record<string, string>;
-  /**
-   * Defaults to `true` — required for CoreSimulator from Xcode 26.4+ to wire up the child's dyld
-   * shared-cache environment (see CLAUDE.md); without it, that CoreSimulator aborts the child with
-   * SIGABRT trying to load even `libSystem.B.dylib`. Defaults to `false` for `launchctl`/`defaults`,
-   * which need to stay attached to the guest's own launchd bootstrap namespace to work/have their
-   * writes observed live. Set explicitly to override either default.
-   */
-  standalone?: boolean;
 }
 
 /** One running process/launchd job inside a device, as reported by `NativeSimctl.listProcesses`. */

@@ -110,8 +110,8 @@ describe('NativeSimctl (read-only)', {timeout: 30000}, () => {
     if (!booted) {
       return;
     }
-    const proc = await sim.spawnProcess(booted.udid, '/bin/echo', {
-      arguments: ['/bin/echo', 'no-crash'],
+    const proc = await sim.spawnProcess(booted.udid, '/bin/df', {
+      arguments: ['/bin/df', '-h'],
       environment: undefined,
     });
     let stdout = '';
@@ -122,7 +122,7 @@ describe('NativeSimctl (read-only)', {timeout: 30000}, () => {
       proc.once('exit', (c, s) => resolve([c, s])),
     );
     assert.strictEqual(code, 0);
-    assert.strictEqual(stdout, 'no-crash\n');
+    assert.match(stdout, /Filesystem/);
   });
 
   it('rejects with a typed, catchable error instead of crashing on an unknown device UDID', async () => {

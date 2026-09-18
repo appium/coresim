@@ -90,7 +90,11 @@ export class SpawnedProcess extends EventEmitter<SpawnedProcessEvents> {
  * exit code/signal — see {@link SpawnedProcess}.
  *
  * @param udid — UDID of the target device
- * @param path — path to the executable to spawn; not auto-prepended to `options.arguments`
+ * @param path — path to the executable to spawn, relative to the Simulator's own runtime root
+ * (e.g. `/usr/bin/log`) — resolved and confined there, so this cannot be used to spawn an
+ * arbitrary host executable. A leading `/` is tolerated (still resolved relative to the runtime
+ * root, not the host's own `/`). Throws if `path` would resolve outside the runtime (e.g. via
+ * `..`). Not auto-prepended to `options.arguments`.
  * @param options — see {@link SpawnOptions}
  * @returns a handle to the spawned process
  */

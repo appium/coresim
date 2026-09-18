@@ -536,9 +536,9 @@ describe('NativeSimctl integration', () => {
       }
 
       it('spawns a process with live stdout and reports a clean exit', async () => {
-        const proc = await sim.spawnProcess(device!.udid, '/bin/echo', {
-          arguments: ['/bin/echo', 'hello-from-integration-test'],
-        });
+        // /bin/echo isn't shipped inside the Simulator runtime (spawnProcess confines `path`
+        // there, see CLAUDE.md) - /bin/df is, and reliably prints a fixed 'Filesystem' header.
+        const proc = await sim.spawnProcess(device!.udid, '/bin/df', {arguments: ['/bin/df', '-h']});
         assert.ok(proc.running);
         let stdout = '';
         proc.stdout.on('data', (chunk) => {
@@ -556,17 +556,42 @@ describe('NativeSimctl integration', () => {
         // signal.
         assert.deepStrictEqual({code, signal}, {code: 0, signal: null});
         assert.strictEqual(proc.running, false);
-        assert.match(stdout, /hello-from-integration-test/);
+        assert.match(stdout, /Filesystem/);
       });
 
       it('kills a long-running spawned process', async () => {
-        const proc = await sim.spawnProcess(device!.udid, '/bin/sleep', {arguments: ['/bin/sleep', '30']});
+        // /bin/sleep isn't shipped inside the Simulator runtime either - log stream runs until
+        // killed, giving the same "runs until killed" shape (and is the actual real-world use
+        // case that surfaced the runtime-confinement/standalone-default work in the first place).
+        const proc = await sim.spawnProcess(device!.udid, '/usr/bin/log', {
+          arguments: ['/usr/bin/log', 'stream'],
+        });
         assert.ok(proc.running);
         const exitPromise = once(proc, 'exit');
         assert.ok(proc.kill());
         const [code, signal] = await exitPromise;
         assert.strictEqual(code, null);
         assert.strictEqual(signal, 'SIGTERM');
+      });
+
+      it('resolves a leading-slash path relative to the Simulator runtime, not the host root', async () => {
+        // A leading '/' must not escape to the host's own filesystem root - /bin/df exists inside
+        // the Simulator runtime but not at the host's literal /bin/df-under-runtime-root path, so
+        // a successful run here proves the resolution, not just that /bin/df exists on the host.
+        const proc = await sim.spawnProcess(device!.udid, '/bin/df', {arguments: ['/bin/df', '-h']});
+        proc.stdout.resume(); // must be flowing for 'end' to ever fire - this test ignores content
+        const [[code, signal]] = await Promise.all([once(proc, 'exit'), once(proc.stdout, 'end')]);
+        assert.deepStrictEqual({code, signal}, {code: 0, signal: null});
+      });
+
+      it('rejects a path that escapes the Simulator runtime via ..', async () => {
+        await assert.rejects(
+          () =>
+            sim.spawnProcess(device!.udid, '../../../../../../etc/passwd', {
+              arguments: ['../../../../../../etc/passwd'],
+            }),
+          /resolves outside the Simulator runtime/,
+        );
       });
 
       it('reports settled boot status, and a further waitForBoot call is immediate', async () => {
