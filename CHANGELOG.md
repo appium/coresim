@@ -1,3 +1,10 @@
+## [1.2.1](https://github.com/appium/coresim/compare/v1.2.0...v1.2.1) (2026-09-18)
+
+### Bug Fixes
+
+* keep defaults spawns attached to the guest bootstrap namespace ([#14](https://github.com/appium/coresim/issues/14)) ([82a2154](https://github.com/appium/coresim/commit/82a215436f9d4ef4346e403f318d37f446717aad))
+* resolve devices by udid case-insensitively ([#13](https://github.com/appium/coresim/issues/13)) ([713b700](https://github.com/appium/coresim/commit/713b700a96e66fa8755b69fbd3537fb54d0e251f))
+
 ## [1.2.0](https://github.com/appium/coresim/compare/v1.1.1...v1.2.0) (2026-09-17)
 
 ### Features
