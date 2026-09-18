@@ -156,7 +156,9 @@ export class NativeSimctl {
   async _findDevice(udid: string): Promise<NativeDeviceHandle> {
     return runCatchingAsync(async () => {
       const deviceSet = await this._deviceSet();
-      const device = (await deviceSet.devices()).find((candidate) => candidate.udid() === udid);
+      const device = (await deviceSet.devices()).find(
+        (candidate) => candidate.udid().toLowerCase() === udid.toLowerCase(),
+      );
       if (!device) {
         throw new Error(`No simulator device found with udid '${udid}'`);
       }

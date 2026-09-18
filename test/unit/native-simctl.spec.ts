@@ -43,6 +43,19 @@ describe('NativeSimctl (read-only)', {timeout: 30000}, () => {
     }
   });
 
+  it("_findDevice resolves a udid that differs from CoreSimulator's canonical case", async () => {
+    // CoreSimulator/simctl report device udids canonically uppercased, but the callers of this
+    // package (e.g. a udid capability an Appium client typed) are not guaranteed to agree on
+    // case. Every per-device command funnels through _findDevice, so this is the single choke
+    // point that needs to tolerate the mismatch.
+    const sim = new NativeSimctl();
+    const devices = await sim.getDevices();
+    assert.ok(devices.length > 0, 'expected at least one simulator device to exist');
+    const target = devices[0];
+    const handle = await sim._findDevice(target.udid.toLowerCase());
+    assert.strictEqual(handle.udid(), target.udid);
+  });
+
   it('lists non-empty, well-formed supported device types', async () => {
     const sim = new NativeSimctl();
     const types = await sim.getSupportedDeviceTypes();
