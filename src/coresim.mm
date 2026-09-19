@@ -99,9 +99,7 @@ NSError* MakeSpawnPathError(NSString* message) {
 // the guest's default $PATH. There's no way to query the guest's actual $PATH (no shell, no env
 // to read before a process even exists), so this is a fixed best-effort list, not a real PATH
 // search — a binary installed somewhere else won't be found this way.
-NSArray<NSString*>* BareCommandSearchDirs() {
-  return @[ @"usr/bin", @"bin", @"usr/sbin", @"sbin", @"usr/local/bin" ];
-}
+NSArray<NSString*>* BareCommandSearchDirs() { return @[ @"usr/bin", @"bin", @"usr/sbin", @"sbin", @"usr/local/bin" ]; }
 
 // Resolves a bare command name (e.g. "launchctl") against BareCommandSearchDirs() under
 // `runtimeRoot`, mirroring how `simctl spawn` resolves a bare name against the guest's $PATH —
