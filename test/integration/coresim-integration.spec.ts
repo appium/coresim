@@ -594,7 +594,7 @@ describe('NativeSimctl integration', () => {
         );
       });
 
-      it('resolves a bare command name against the runtime\'s standard bin dirs', async () => {
+      it("resolves a bare command name against the runtime's standard bin dirs", async () => {
         // No '/' in 'df' - proves this goes through bare-name search (usr/bin, bin, ...) rather
         // than the literal-path join used by the other spawnProcess tests above.
         const proc = await sim.spawnProcess(device!.udid, 'df', {arguments: ['df', '-h']});

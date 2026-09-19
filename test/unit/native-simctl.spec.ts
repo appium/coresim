@@ -125,7 +125,7 @@ describe('NativeSimctl (read-only)', {timeout: 30000}, () => {
     assert.match(stdout, /Filesystem/);
   });
 
-  it('resolves a bare command name against the runtime\'s standard bin dirs, when one is booted', async () => {
+  it("resolves a bare command name against the runtime's standard bin dirs, when one is booted", async () => {
     const sim = new NativeSimctl();
     const booted = (await sim.getDevices()).find((d) => d.state === SimDeviceState.Booted);
     if (!booted) {
