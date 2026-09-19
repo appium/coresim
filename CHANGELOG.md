@@ -1,3 +1,9 @@
+## [1.3.0](https://github.com/appium/coresim/compare/v1.2.1...v1.3.0) (2026-09-19)
+
+### Features
+
+* confine spawnProcess to the Simulator runtime root ([#15](https://github.com/appium/coresim/issues/15)) ([2f30f65](https://github.com/appium/coresim/commit/2f30f65e55e8a3cafb0fb0a0c0f2db612287b4a1))
+
 ## [1.2.1](https://github.com/appium/coresim/compare/v1.2.0...v1.2.1) (2026-09-18)
 
 ### Bug Fixes
