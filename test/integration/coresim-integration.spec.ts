@@ -594,6 +594,26 @@ describe('NativeSimctl integration', () => {
         );
       });
 
+      it('resolves a bare command name against the runtime\'s standard bin dirs', async () => {
+        // No '/' in 'df' - proves this goes through bare-name search (usr/bin, bin, ...) rather
+        // than the literal-path join used by the other spawnProcess tests above.
+        const proc = await sim.spawnProcess(device!.udid, 'df', {arguments: ['df', '-h']});
+        let stdout = '';
+        proc.stdout.on('data', (chunk) => {
+          stdout += chunk;
+        });
+        const [[code, signal]] = await Promise.all([once(proc, 'exit'), once(proc.stdout, 'end')]);
+        assert.deepStrictEqual({code, signal}, {code: 0, signal: null});
+        assert.match(stdout, /Filesystem/);
+      });
+
+      it('rejects a bare command name that matches no binary in the runtime', async () => {
+        await assert.rejects(
+          () => sim.spawnProcess(device!.udid, 'this-binary-does-not-exist'),
+          /not found in the Simulator runtime's standard bin directories/,
+        );
+      });
+
       it('reports settled boot status, and a further waitForBoot call is immediate', async () => {
         // The before() hook already waited for full settlement, so both checks here should be
         // near-instant — this exercises the "already booted" fast path specifically.

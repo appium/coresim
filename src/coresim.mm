@@ -95,11 +95,38 @@ NSError* MakeSpawnPathError(NSString* message) {
   return [NSError errorWithDomain:@"com.appium.coresim.spawn" code:1 userInfo:@{NSLocalizedDescriptionKey : message}];
 }
 
+// Standard bin dirs to search, in order, when `path` is a bare command name (no `/`) — mirrors
+// the guest's default $PATH. There's no way to query the guest's actual $PATH (no shell, no env
+// to read before a process even exists), so this is a fixed best-effort list, not a real PATH
+// search — a binary installed somewhere else won't be found this way.
+NSArray<NSString*>* BareCommandSearchDirs() {
+  return @[ @"usr/bin", @"bin", @"usr/sbin", @"sbin", @"usr/local/bin" ];
+}
+
+// Resolves a bare command name (e.g. "launchctl") against BareCommandSearchDirs() under
+// `runtimeRoot`, mirroring how `simctl spawn` resolves a bare name against the guest's $PATH —
+// CoreSimulator's own spawn API takes only a literal path, so it does no such resolution itself.
+NSString* ResolveBareCommand(NSString* runtimeRoot, NSString* name, NSError** error) {
+  NSFileManager* fm = [NSFileManager defaultManager];
+  for (NSString* dir in BareCommandSearchDirs()) {
+    NSString* candidate = [runtimeRoot stringByAppendingPathComponent:[dir stringByAppendingPathComponent:name]];
+    BOOL isDirectory = NO;
+    if ([fm fileExistsAtPath:candidate isDirectory:&isDirectory] && !isDirectory &&
+        [fm isExecutableFileAtPath:candidate]) {
+      return candidate;
+    }
+  }
+  *error = MakeSpawnPathError(
+      [NSString stringWithFormat:@"'%@' not found in the Simulator runtime's standard bin directories", name]);
+  return nil;
+}
+
 // `spawnWithPath:options:...` can run anything the host user can execute, so Spawn() confines it
 // to the Simulator's own runtime image rather than trusting `path` as a literal host path — a
-// deliberately breaking restriction (see CLAUDE.md). `path` is resolved as relative to the
-// runtime root, then re-verified (via -stringByStandardizingPath, which collapses ".."/".") to
-// still fall under it, since `path` may come from arbitrary caller input.
+// deliberately breaking restriction (see CLAUDE.md). A bare name (no `/`) is resolved via
+// ResolveBareCommand above instead; otherwise `path` is resolved as relative to the runtime root,
+// then re-verified (via -stringByStandardizingPath, which collapses ".."/".") to still fall under
+// it, since `path` may come from arbitrary caller input.
 NSString* ResolveRuntimeBinaryPath(id device, NSString* path, NSError** error) {
   id runtime = DeviceRuntime(device);
   if (runtime == nil) {
@@ -107,6 +134,9 @@ NSString* ResolveRuntimeBinaryPath(id device, NSString* path, NSError** error) {
     return nil;
   }
   NSString* runtimeRoot = coresim::RuntimeRootPath(runtime).stringByStandardizingPath;
+  if (![path containsString:@"/"]) {
+    return ResolveBareCommand(runtimeRoot, path, error);
+  }
   NSString* resolved = [runtimeRoot stringByAppendingPathComponent:path].stringByStandardizingPath;
   if (resolved != runtimeRoot && ![resolved hasPrefix:[runtimeRoot stringByAppendingString:@"/"]]) {
     *error = MakeSpawnPathError(
