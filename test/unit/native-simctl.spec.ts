@@ -125,6 +125,36 @@ describe('NativeSimctl (read-only)', {timeout: 30000}, () => {
     assert.match(stdout, /Filesystem/);
   });
 
+  it("resolves a bare command name against the runtime's standard bin dirs, when one is booted", async () => {
+    const sim = new NativeSimctl();
+    const booted = (await sim.getDevices()).find((d) => d.state === SimDeviceState.Booted);
+    if (!booted) {
+      return;
+    }
+    const proc = await sim.spawnProcess(booted.udid, 'df', {arguments: ['df', '-h']});
+    let stdout = '';
+    proc.stdout.on('data', (chunk: Buffer) => {
+      stdout += chunk;
+    });
+    const [code] = await new Promise<[number | null, NodeJS.Signals | null]>((resolve) =>
+      proc.once('exit', (c, s) => resolve([c, s])),
+    );
+    assert.strictEqual(code, 0);
+    assert.match(stdout, /Filesystem/);
+  });
+
+  it('rejects a bare command name that matches no binary in the runtime, when one is booted', async () => {
+    const sim = new NativeSimctl();
+    const booted = (await sim.getDevices()).find((d) => d.state === SimDeviceState.Booted);
+    if (!booted) {
+      return;
+    }
+    await assert.rejects(
+      () => sim.spawnProcess(booted.udid, 'this-binary-does-not-exist'),
+      /not found in the Simulator runtime's standard bin directories/,
+    );
+  });
+
   it('rejects with a typed, catchable error instead of crashing on an unknown device UDID', async () => {
     const sim = new NativeSimctl();
     await assert.rejects(() => sim.shutdownDevice('00000000-0000-0000-0000-000000000000'), /No simulator device found/);

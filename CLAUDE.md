@@ -97,6 +97,11 @@ toolchain (`make` and `xcodebuild`).
   the host's own `/`); a `path` that would resolve outside it (e.g. via `..`) throws, checked via
   `-stringByStandardizingPath` rather than a naive string search. Deliberately breaking: earlier
   versions took `path` as a literal, unconfined path.
+- **A bare `path` (no `/`) is resolved by searching a fixed list of standard bin dirs under the
+  runtime root** (`ResolveBareCommand` in coresim.mm: `usr/bin`, `bin`, `usr/sbin`, `sbin`,
+  `usr/local/bin`), mirroring `simctl spawn`'s own bare-name resolution. This is a guess, not a
+  real `$PATH` search — there's no way to read the guest's actual `$PATH` before a process exists
+  to read it from — so a binary outside those dirs must still be spawned by its full path.
 - **`spawnProcess` always sets the spawn options' `"standalone"` key to `false`**
   (`kSimDeviceSpawnStandalone`, confirmed via `strings` on the framework binary — no public header
   exists), not caller-configurable — since `path` always resolves inside the guest runtime
@@ -137,10 +142,10 @@ toolchain (`make` and `xcodebuild`).
   resolves against `-[SimServiceContext deviceSetWithPath:error:]` instead of
   `defaultDeviceSetWithError:`. Unset, behavior is unchanged (the default device set).
 - **`listProcesses` must spawn the guest runtime's own `launchctl`, not the host's
-  `/bin/launchctl`** — the host binary exits 5 (wrong launchd). `simctl spawn` resolves a bare
-  `launchctl` against the guest's `$PATH`; our spawn API takes a literal path, so we resolve
-  `<SimRuntime.root>/bin/launchctl` ourselves via `RuntimeRootPath`, also exposed publicly as
-  `getRuntimeRootPath`.
+  `/bin/launchctl`** — the host binary exits 5 (wrong launchd). It spawns it by bare name
+  (`spawnProcess`'s own PATH-like resolution, above, finds it under the runtime root), the same
+  way `simctl spawn` would resolve it against the guest's `$PATH`. The runtime root itself is also
+  exposed publicly as `getRuntimeRootPath`, for callers that need the raw path directly.
 
 ## Known gaps
 

@@ -32,10 +32,9 @@ export async function getRuntimeRootPath(this: NativeSimctl, udid: string): Prom
  */
 export async function listProcesses(this: NativeSimctl, udid: string): Promise<SimProcessInfo[]> {
   return runCatchingAsync(async () => {
-    // spawnProcess() resolves this against the guest runtime root itself (see CLAUDE.md) — the
-    // guest runtime ships its own launchctl, distinct from the host's /bin/launchctl.
-    const launchctlPath = '/bin/launchctl';
-    const proc = await this.spawnProcess(udid, launchctlPath, {arguments: [launchctlPath, 'list']});
+    // Bare name: spawnProcess() resolves it against the guest runtime's own bin dirs, distinct
+    // from the host's /bin/launchctl (see CLAUDE.md).
+    const proc = await this.spawnProcess(udid, 'launchctl', {arguments: ['launchctl', 'list']});
     let stdout = '';
     let stderr = '';
     proc.stdout.on('data', (chunk: Buffer) => {
