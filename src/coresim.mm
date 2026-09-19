@@ -92,9 +92,7 @@ NSError* MakeDescriptorError(NSString* which, int savedErrno) {
 }
 
 NSError* MakeSpawnPathError(NSString* message) {
-  return [NSError errorWithDomain:@"com.appium.coresim.spawn"
-                              code:1
-                          userInfo:@{NSLocalizedDescriptionKey : message}];
+  return [NSError errorWithDomain:@"com.appium.coresim.spawn" code:1 userInfo:@{NSLocalizedDescriptionKey : message}];
 }
 
 // `spawnWithPath:options:...` can run anything the host user can execute, so Spawn() confines it
