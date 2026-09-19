@@ -1,3 +1,9 @@
+## [1.4.0](https://github.com/appium/coresim/compare/v1.3.0...v1.4.0) (2026-09-19)
+
+### Features
+
+* resolve bare command names in spawnProcess against the runtime's bin dirs ([#16](https://github.com/appium/coresim/issues/16)) ([155654d](https://github.com/appium/coresim/commit/155654d1b2ac1235445cd511c0f7a0d49038bf26))
+
 ## [1.3.0](https://github.com/appium/coresim/compare/v1.2.1...v1.3.0) (2026-09-19)
 
 ### Features
