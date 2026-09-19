@@ -91,15 +91,23 @@ toolchain (`make` and `xcodebuild`).
   confirmed the hard way: passing the pipe's `NSFileHandle` object itself (not just a wrong type)
   crashed the process on some CoreSimulator versions via `-[NSConcreteFileHandle intValue]:
   unrecognized selector` — the internal handler wants a raw fd number (`NSNumber`).
-- **`spawnProcess` defaults the spawn options' `"standalone"` key to `true`**
+- **`spawnProcess`'s `path` is always resolved against the Simulator's own runtime root and
+  confined there** (`ResolveRuntimeBinaryPath` in coresim.mm) — it cannot be used to spawn an
+  arbitrary host executable. A leading `/` is tolerated (still joined under the runtime root, not
+  the host's own `/`); a `path` that would resolve outside it (e.g. via `..`) throws, checked via
+  `-stringByStandardizingPath` rather than a naive string search. Deliberately breaking: earlier
+  versions took `path` as a literal, unconfined path.
+- **`spawnProcess` always sets the spawn options' `"standalone"` key to `false`**
   (`kSimDeviceSpawnStandalone`, confirmed via `strings` on the framework binary — no public header
-  exists). Without it, CoreSimulator from Xcode 26.4+ never wires up the spawned process's dyld
-  shared-cache environment, aborting it with SIGABRT trying to load even `libSystem.B.dylib` —
-  reproduced only on hosted CI (never locally), diagnosed from the child's own crash report. Two
-  exceptions default to `false` (checked by executable name in coresim.mm, not left to callers),
-  since a standalone spawn is detached from the guest's launchd bootstrap namespace: `launchctl`,
-  which doesn't function at all without it, and `defaults`, whose writes otherwise land on disk but
-  are never observed by already-running guest processes (e.g. Settings.app).
+  exists), not caller-configurable — since `path` always resolves inside the guest runtime
+  (above), every spawn needs to stay attached to the guest's launchd bootstrap namespace to
+  function / have its effects observed there. Known risk accepted deliberately: some CoreSimulator
+  versions (Xcode 26.4+) instead require a *standalone* spawn for a non-system binary to load its
+  dyld shared cache correctly, aborting a non-standalone one with SIGABRT trying to load even
+  `libSystem.B.dylib` — reproduced only on hosted CI (never locally), diagnosed from the child's
+  own crash report, and only previously worked around (not root-caused) by defaulting to
+  standalone. If this resurfaces for a runtime binary, it needs a real fix here, not a caller
+  escape hatch.
 - **Privacy permissions (`grantPermission`/`revokePermission`/`resetPermission`) are implemented by
   writing directly to the simulator's own TCC (privacy) SQLite database**, not by calling
   CoreSimulator's private privacy API — that API requires a process entitlement no ordinary npm

@@ -91,6 +91,31 @@ NSError* MakeDescriptorError(NSString* which, int savedErrno) {
                          }];
 }
 
+NSError* MakeSpawnPathError(NSString* message) {
+  return [NSError errorWithDomain:@"com.appium.coresim.spawn" code:1 userInfo:@{NSLocalizedDescriptionKey : message}];
+}
+
+// `spawnWithPath:options:...` can run anything the host user can execute, so Spawn() confines it
+// to the Simulator's own runtime image rather than trusting `path` as a literal host path — a
+// deliberately breaking restriction (see CLAUDE.md). `path` is resolved as relative to the
+// runtime root, then re-verified (via -stringByStandardizingPath, which collapses ".."/".") to
+// still fall under it, since `path` may come from arbitrary caller input.
+NSString* ResolveRuntimeBinaryPath(id device, NSString* path, NSError** error) {
+  id runtime = DeviceRuntime(device);
+  if (runtime == nil) {
+    *error = MakeSpawnPathError(@"Could not resolve the Simulator's runtime to spawn a process inside it");
+    return nil;
+  }
+  NSString* runtimeRoot = coresim::RuntimeRootPath(runtime).stringByStandardizingPath;
+  NSString* resolved = [runtimeRoot stringByAppendingPathComponent:path].stringByStandardizingPath;
+  if (resolved != runtimeRoot && ![resolved hasPrefix:[runtimeRoot stringByAppendingString:@"/"]]) {
+    *error = MakeSpawnPathError(
+        [NSString stringWithFormat:@"'%@' resolves outside the Simulator runtime ('%@')", path, runtimeRoot]);
+    return nil;
+  }
+  return resolved;
+}
+
 // Plain data Spawn()'s work lambda (background thread) hands to its toValue callback (main
 // thread) — see NativeDevice::Spawn below.
 struct SpawnResult {
@@ -727,19 +752,25 @@ class NativeDevice : public Napi::ObjectWrap<NativeDevice> {
             throw NSErrorException(MakeDescriptorError(@"stderr", savedErrno));
           }
 
+          NSError* resolveError = nil;
+          NSString* resolvedPath = ResolveRuntimeBinaryPath(device, path, &resolveError);
+          if (resolvedPath == nil) {
+            [stdoutPipe.fileHandleForWriting closeFile];
+            [stderrPipe.fileHandleForWriting closeFile];
+            close(stdoutFd);
+            close(stderrFd);
+            exitTsfn.Release();
+            throw NSErrorException(resolveError);
+          }
+
           NSMutableDictionary* options = [userOptions mutableCopy];
           options[@"stdout"] = @(stdoutPipe.fileHandleForWriting.fileDescriptor);
           options[@"stderr"] = @(stderrPipe.fileHandleForWriting.fileDescriptor);
-          // kSimDeviceSpawnStandalone — see CLAUDE.md/SpawnOptions. Defaults to YES except for
-          // launchctl and defaults, which need to stay attached to the guest's launchd bootstrap
-          // namespace to work (launchctl) / have their writes observed live (defaults) — checked
-          // here by executable name so every caller gets it right, not just our own.
-          if (!options[@"standalone"]) {
-            NSString* lastComponent = path.lastPathComponent;
-            BOOL needsBootstrapAttachment =
-                [lastComponent isEqualToString:@"launchctl"] || [lastComponent isEqualToString:@"defaults"];
-            options[@"standalone"] = @(!needsBootstrapAttachment);
-          }
+          // kSimDeviceSpawnStandalone — see CLAUDE.md. Always NO: `path` always resolves inside
+          // the Simulator runtime now (above), so every spawn needs to stay attached to the
+          // guest's launchd bootstrap namespace to have its effects observed / function at all.
+          // Not caller-configurable — there's no longer a legitimate reason to detach it.
+          options[@"standalone"] = @NO;
 
           void (^terminationHandler)(int) = ^(int status) {
             // Confirmed empirically (see CLAUDE.md): `status` is a raw wait(2)-style status, not a
@@ -762,7 +793,7 @@ class NativeDevice : public Napi::ObjectWrap<NativeDevice> {
           NSError* error = nil;
           int pid;
           try {
-            pid = coresim::Spawn(device, path, options, dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0),
+            pid = coresim::Spawn(device, resolvedPath, options, dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0),
                                  terminationHandler, &error);
           } catch (...) {
             [stdoutPipe.fileHandleForWriting closeFile];

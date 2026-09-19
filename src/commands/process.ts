@@ -13,10 +13,9 @@ declare module '../native-simctl.js' {
 
 /**
  * Resolves the given (booted) device's own runtime bundle root — e.g.
- * `.../iOS.simruntime/Contents/Resources/RuntimeRoot` — the same directory {@link listProcesses}
- * resolves `launchctl` against. Needed by callers of {@link spawnProcess} that want to run a
- * binary the guest runtime ships its own copy of (distinct from the host's own copy at the same
- * name — see CLAUDE.md), since `spawnProcess` takes a literal path with no `$PATH` search.
+ * `.../iOS.simruntime/Contents/Resources/RuntimeRoot` — the same directory {@link spawnProcess}
+ * confines its own `path` argument to. Exposed for callers that need the raw path for some other
+ * purpose (e.g. inspecting the runtime image directly).
  *
  * @param udid — UDID of the device to inspect; must be booted
  */
@@ -33,10 +32,9 @@ export async function getRuntimeRootPath(this: NativeSimctl, udid: string): Prom
  */
 export async function listProcesses(this: NativeSimctl, udid: string): Promise<SimProcessInfo[]> {
   return runCatchingAsync(async () => {
-    const device = await this._findDevice(udid);
-    // The guest runtime ships its own launchctl, distinct from the host's /bin/launchctl (see
-    // CLAUDE.md) — spawn() takes a literal path, so resolve it via RuntimeRoot ourselves.
-    const launchctlPath = `${device.runtimeRootPath()}/bin/launchctl`;
+    // spawnProcess() resolves this against the guest runtime root itself (see CLAUDE.md) — the
+    // guest runtime ships its own launchctl, distinct from the host's /bin/launchctl.
+    const launchctlPath = '/bin/launchctl';
     const proc = await this.spawnProcess(udid, launchctlPath, {arguments: [launchctlPath, 'list']});
     let stdout = '';
     let stderr = '';
