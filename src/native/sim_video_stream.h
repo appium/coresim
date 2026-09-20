@@ -34,7 +34,7 @@ struct VideoStreamOptions {
 class VideoStreamSession {
  public:
   VideoStreamSession(id device, VideoStreamOptions options, std::function<void(VideoAccessUnit)> onAccessUnit,
-                      std::function<void(NSError*)> onError, std::function<void()> onEnd);
+                     std::function<void(NSError*)> onError, std::function<void()> onEnd);
   ~VideoStreamSession();
 
   VideoStreamSession(const VideoStreamSession&) = delete;

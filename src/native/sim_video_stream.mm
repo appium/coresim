@@ -19,9 +19,7 @@ namespace {
 NSString* const kVideoStreamErrorDomain = @"com.appium.coresim.VideoStream";
 
 NSError* MakeError(NSInteger code, NSString* message) {
-  return [NSError errorWithDomain:kVideoStreamErrorDomain
-                              code:code
-                          userInfo:@{NSLocalizedDescriptionKey : message}];
+  return [NSError errorWithDomain:kVideoStreamErrorDomain code:code userInfo:@{NSLocalizedDescriptionKey : message}];
 }
 
 NSError* MakeStatusError(NSInteger code, NSString* what, OSStatus status) {
@@ -48,10 +46,9 @@ void AppendSampleBufferNALs(std::vector<uint8_t>& out, CMSampleBufferRef sampleB
   }
   size_t offset = 0;
   while (offset + 4 <= totalLength) {
-    uint32_t nalLength = (static_cast<uint8_t>(dataPointer[offset]) << 24) |
-                          (static_cast<uint8_t>(dataPointer[offset + 1]) << 16) |
-                          (static_cast<uint8_t>(dataPointer[offset + 2]) << 8) |
-                          static_cast<uint8_t>(dataPointer[offset + 3]);
+    uint32_t nalLength =
+        (static_cast<uint8_t>(dataPointer[offset]) << 24) | (static_cast<uint8_t>(dataPointer[offset + 1]) << 16) |
+        (static_cast<uint8_t>(dataPointer[offset + 2]) << 8) | static_cast<uint8_t>(dataPointer[offset + 3]);
     offset += 4;
     if (nalLength == 0 || offset + nalLength > totalLength) {
       break;
@@ -130,8 +127,9 @@ class VideoStreamSession::Impl {
 
     double interval = 1.0 / std::max(options_.fps, 1.0);
     dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, queue_);
-    dispatch_source_set_timer(timer, dispatch_time(DISPATCH_TIME_NOW, 0), static_cast<uint64_t>(interval * NSEC_PER_SEC),
-                               static_cast<uint64_t>(interval * NSEC_PER_SEC / 10));
+    dispatch_source_set_timer(timer, dispatch_time(DISPATCH_TIME_NOW, 0),
+                              static_cast<uint64_t>(interval * NSEC_PER_SEC),
+                              static_cast<uint64_t>(interval * NSEC_PER_SEC / 10));
     // `this` outlives the timer: Stop()/StopFromQueue() always drain or outrun it before `this`
     // can be destroyed (see their comments below).
     dispatch_source_set_event_handler(timer, ^{
@@ -151,7 +149,7 @@ class VideoStreamSession::Impl {
       // Blocks until any in-flight Tick() finishes — by then running_ is already false, so it
       // won't touch session_ again.
       dispatch_sync(queue_, ^{
-      });
+                    });
       timer_ = nullptr;
     }
     TearDownSessionAndFireEnd();
@@ -230,9 +228,10 @@ class VideoStreamSession::Impl {
   bool SetUpSession(IOSurfaceRef surface, NSError** error) {
     int32_t width = static_cast<int32_t>(IOSurfaceGetWidth(surface));
     int32_t height = static_cast<int32_t>(IOSurfaceGetHeight(surface));
-    CMVideoCodecType codecType = options_.codec == VideoStreamCodec::kHEVC ? kCMVideoCodecType_HEVC : kCMVideoCodecType_H264;
+    CMVideoCodecType codecType =
+        options_.codec == VideoStreamCodec::kHEVC ? kCMVideoCodecType_HEVC : kCMVideoCodecType_H264;
     OSStatus status = VTCompressionSessionCreate(kCFAllocatorDefault, width, height, codecType, nullptr, nullptr,
-                                                  kCFAllocatorDefault, OutputCallback, this, &session_);
+                                                 kCFAllocatorDefault, OutputCallback, this, &session_);
     if (status != noErr) {
       *error = MakeStatusError(1, @"Failed to create a VTCompressionSession", status);
       return false;
@@ -246,14 +245,15 @@ class VideoStreamSession::Impl {
     }
     if (status == noErr) {
       status = VTSessionSetProperty(session_, kVTCompressionPropertyKey_AverageBitRate,
-                                     (__bridge CFNumberRef)@(options_.bitrate));
+                                    (__bridge CFNumberRef) @(options_.bitrate));
     }
     if (status == noErr) {
-      status = VTSessionSetProperty(session_, kVTCompressionPropertyKey_ExpectedFrameRate, (__bridge CFNumberRef)@(fps));
+      status =
+          VTSessionSetProperty(session_, kVTCompressionPropertyKey_ExpectedFrameRate, (__bridge CFNumberRef) @(fps));
     }
     if (status == noErr) {
       status = VTSessionSetProperty(session_, kVTCompressionPropertyKey_MaxKeyFrameInterval,
-                                     (__bridge CFNumberRef)@(static_cast<int>(fps * 2)));
+                                    (__bridge CFNumberRef) @(static_cast<int>(fps * 2)));
     }
     if (status != noErr) {
       *error = MakeStatusError(2, @"Failed to configure the VTCompressionSession", status);
@@ -273,17 +273,17 @@ class VideoStreamSession::Impl {
       return;  // transient — try again next tick rather than tearing down the whole stream
     }
     CMTime pts = CMTimeMake(static_cast<int64_t>((CFAbsoluteTimeGetCurrent() - startTime_) * 1000000), 1000000);
-    OSStatus status = VTCompressionSessionEncodeFrame(session_, pixelBuffer, pts, kCMTimeInvalid, nullptr, nullptr, nullptr);
+    OSStatus status =
+        VTCompressionSessionEncodeFrame(session_, pixelBuffer, pts, kCMTimeInvalid, nullptr, nullptr, nullptr);
     CVPixelBufferRelease(pixelBuffer);
     if (status != noErr) {
-      throw std::runtime_error(
-          [[NSString stringWithFormat:@"VTCompressionSessionEncodeFrame failed (OSStatus %d)", static_cast<int>(status)]
-              UTF8String]);
+      throw std::runtime_error([[NSString stringWithFormat:@"VTCompressionSessionEncodeFrame failed (OSStatus %d)",
+                                                           static_cast<int>(status)] UTF8String]);
     }
   }
 
   static void OutputCallback(void* outputCallbackRefCon, void* /*sourceFrameRefCon*/, OSStatus status,
-                              VTEncodeInfoFlags /*infoFlags*/, CMSampleBufferRef sampleBuffer) {
+                             VTEncodeInfoFlags /*infoFlags*/, CMSampleBufferRef sampleBuffer) {
     static_cast<Impl*>(outputCallbackRefCon)->HandleEncodedSample(status, sampleBuffer);
   }
 
@@ -334,8 +334,8 @@ class VideoStreamSession::Impl {
 };
 
 VideoStreamSession::VideoStreamSession(id device, VideoStreamOptions options,
-                                        std::function<void(VideoAccessUnit)> onAccessUnit,
-                                        std::function<void(NSError*)> onError, std::function<void()> onEnd)
+                                       std::function<void(VideoAccessUnit)> onAccessUnit,
+                                       std::function<void(NSError*)> onError, std::function<void()> onEnd)
     : impl_(std::make_unique<Impl>(device, options, std::move(onAccessUnit), std::move(onError), std::move(onEnd))) {}
 
 VideoStreamSession::~VideoStreamSession() = default;

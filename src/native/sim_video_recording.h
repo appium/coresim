@@ -16,9 +16,8 @@ enum class VideoMaskPolicy : long long {
 // Starts recording `displayId` (nil = primary) to `outputFile`, an absolute path, not a URL (see
 // CLAUDE.md). Returns NO+*error on synchronous resolution failure (`handler` never called then);
 // otherwise `handler` fires once the first frame is recorded, non-nil NSError on failure.
-BOOL StartVideoRecording(id device, NSString* displayId, VideoMaskPolicy mask,
-                          NSDictionary* assetWriterOutputSettings, NSString* outputFile,
-                          dispatch_queue_t queue, void (^handler)(NSError*), NSError** error);
+BOOL StartVideoRecording(id device, NSString* displayId, VideoMaskPolicy mask, NSDictionary* assetWriterOutputSettings,
+                         NSString* outputFile, dispatch_queue_t queue, void (^handler)(NSError*), NSError** error);
 
 // Stops the recording started by StartVideoRecording. Must not be called before its `handler` has
 // already fired — see CLAUDE.md for the race that otherwise causes a silent empty-file failure.

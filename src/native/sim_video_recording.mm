@@ -13,9 +13,7 @@ namespace {
 NSString* const kVideoRecordingErrorDomain = @"com.appium.coresim.VideoRecording";
 
 NSError* MakeError(NSInteger code, NSString* message) {
-  return [NSError errorWithDomain:kVideoRecordingErrorDomain
-                              code:code
-                          userInfo:@{NSLocalizedDescriptionKey : message}];
+  return [NSError errorWithDomain:kVideoRecordingErrorDomain code:code userInfo:@{NSLocalizedDescriptionKey : message}];
 }
 
 id IdGetter(id target, const std::string& selectorName) {
@@ -53,9 +51,8 @@ id ResolveVideoCaptureService(id device, NSError** error) {
 
 }  // namespace
 
-BOOL StartVideoRecording(id device, NSString* displayId, VideoMaskPolicy mask,
-                          NSDictionary* assetWriterOutputSettings, NSString* outputFile,
-                          dispatch_queue_t queue, void (^handler)(NSError*), NSError** error) {
+BOOL StartVideoRecording(id device, NSString* displayId, VideoMaskPolicy mask, NSDictionary* assetWriterOutputSettings,
+                         NSString* outputFile, dispatch_queue_t queue, void (^handler)(NSError*), NSError** error) {
   id captureService = ResolveVideoCaptureService(device, error);
   if (captureService == nil) {
     return NO;
@@ -70,7 +67,7 @@ BOOL StartVideoRecording(id device, NSString* displayId, VideoMaskPolicy mask,
   return SafeInvoke([&] {
     using Fn = void (*)(id, SEL, id, long long, NSDictionary*, NSString*, dispatch_queue_t, void (^)(NSError*));
     ((Fn)objc_msgSend)(captureService, selector, screen, static_cast<long long>(mask), assetWriterOutputSettings,
-                        outputFile, queue, handler);
+                       outputFile, queue, handler);
     return YES;
   });
 }

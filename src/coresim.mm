@@ -233,9 +233,9 @@ NativeVideoStream::NativeVideoStream(const Napi::CallbackInfo& info) : Napi::Obj
 
 void NativeVideoStream::Init(Napi::Env env) {
   Napi::Function ctor = DefineClass(env, "NativeVideoStream",
-                                     {
-                                         InstanceMethod<&NativeVideoStream::Stop>("stop"),
-                                     });
+                                    {
+                                        InstanceMethod<&NativeVideoStream::Stop>("stop"),
+                                    });
   env.GetInstanceData<AddonInstanceData>()->videoStreamConstructor = Napi::Persistent(ctor);
 }
 
@@ -891,7 +891,8 @@ class NativeDevice : public Napi::ObjectWrap<NativeDevice> {
     static constexpr size_t kAccessUnitQueueSize = 60;
     Napi::ThreadSafeFunction accessUnitTsfn =
         Napi::ThreadSafeFunction::New(env, onAccessUnit, "coresim video stream access unit", kAccessUnitQueueSize, 1);
-    Napi::ThreadSafeFunction errorTsfn = Napi::ThreadSafeFunction::New(env, onError, "coresim video stream error", 0, 1);
+    Napi::ThreadSafeFunction errorTsfn =
+        Napi::ThreadSafeFunction::New(env, onError, "coresim video stream error", 0, 1);
 
     coresim::VideoStreamOptions options{codec, displayId, fps, bitrate};
     return RunAsync<std::shared_ptr<coresim::VideoStreamSession>>(
