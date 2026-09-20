@@ -110,6 +110,15 @@ export async function startVideoStream(
   udid: string,
   options: VideoStreamOptions = {},
 ): Promise<VideoStream> {
+  if (options.fps !== undefined && (!Number.isFinite(options.fps) || options.fps <= 0)) {
+    throw new RangeError(`fps must be a positive finite number, got ${options.fps}`);
+  }
+  if (
+    options.bitrate !== undefined &&
+    (!Number.isFinite(options.bitrate) || options.bitrate <= 0 || options.bitrate > 2 ** 31 - 1)
+  ) {
+    throw new RangeError(`bitrate must be a positive number no greater than ${2 ** 31 - 1}, got ${options.bitrate}`);
+  }
   const device = await runCatchingAsync(() => this._findDevice(udid));
   const stream = new VideoStream(options.codec === 'hevc' ? 'hevc' : 'h264');
   const handle = await runCatchingAsync(() =>

@@ -95,11 +95,43 @@ class VideoStreamSession::Impl {
 
   void Start() {
     NSError* error = nil;
-    descriptor_ = ResolveCaptureDisplay(device_, options_.displayId, &error);
-    if (descriptor_ == nil) {
+    id descriptor = ResolveCaptureDisplay(device_, options_.displayId, &error);
+    if (descriptor == nil) {
       throw NSErrorException(error);
     }
+    id surfaceObj = CurrentDisplaySurface(descriptor);
+    if (surfaceObj == nil) {
+      throw NSErrorException(MakeError(4, @"The device's display surface is not available yet"));
+    }
+    IOSurfaceRef surface = (__bridge IOSurfaceRef)surfaceObj;
+    // Set up the compression session synchronously, here, rather than lazily on the first Tick()
+    // — so a setup failure (e.g. an unsupported width/height/codec combination) rejects
+    // StartVideoStream()'s own promise directly instead of only reaching the caller via onError,
+    // which they might not be listening for yet (see CLAUDE.md).
+    NSError* setupError = nil;
+    if (!SetUpSession(surface, &setupError)) {
+      throw NSErrorException(setupError);
+    }
+    // Set before the initial EncodeSurface call below, not after — EncodeSurface/HandleEncodedSample
+    // both compute elapsed time from startTime_, so the very first access unit needs it set first
+    // too, exactly like every later one.
     startTime_ = CFAbsoluteTimeGetCurrent();
+    // Encode the current frame immediately rather than waiting for the timer's first tick to see
+    // a *changed* seed — a freshly created session hasn't encoded anything yet, so without this
+    // the stream would stay silent until the display actually changes again. Done here, before
+    // running_ is set true, so a failure tears session_ down itself: once running_ is true, that
+    // job belongs to Stop()/onEnd_ (see TearDownSessionAndFireEnd), and firing onEnd_ this early
+    // would double-release the ThreadSafeFunctions StartVideoStream's own catch block already
+    // releases on a Start() failure (see coresim.mm).
+    try {
+      EncodeSurface(surface);
+    } catch (...) {
+      VTCompressionSessionInvalidate(session_);
+      CFRelease(session_);
+      session_ = nullptr;
+      throw;
+    }
+    lastSeed_ = IOSurfaceGetSeed(surface);
     running_ = true;
 
     double interval = 1.0 / std::max(options_.fps, 1.0);
@@ -152,6 +184,15 @@ class VideoStreamSession::Impl {
 
   void TearDownSessionAndFireEnd() {
     if (session_ != nullptr) {
+      // VTCompressionSessionCreate's completion callback isn't bound to `queue_` and isn't
+      // guaranteed to fire synchronously with the encode call that triggered it — without this
+      // flush, a frame submitted just before Stop() could still have HandleEncodedSample fire
+      // (on some VideoToolbox-owned thread) after the ThreadSafeFunctions below are released,
+      // which is a use-after-release. VTCompressionSessionCompleteFrames blocks until every
+      // already-submitted frame's callback has actually returned, on whatever thread it runs on,
+      // closing that window — any such trailing callback still safely no-ops on its own, since
+      // HandleEncodedSample's `!running_` check is already true by the time this runs.
+      VTCompressionSessionCompleteFrames(session_, kCMTimeInvalid);
       VTCompressionSessionInvalidate(session_);
       CFRelease(session_);
       session_ = nullptr;
@@ -166,28 +207,44 @@ class VideoStreamSession::Impl {
       return;
     }
     @autoreleasepool {
-      id surfaceObj = CurrentDisplaySurface(descriptor_);
-      if (surfaceObj == nil) {
-        return;  // transient — the connection may not have a frame ready yet, try again next tick
-      }
-      IOSurfaceRef surface = (__bridge IOSurfaceRef)surfaceObj;
-      uint32_t seed = IOSurfaceGetSeed(surface);
-      if (session_ != nullptr && seed == lastSeed_) {
-        return;  // unchanged since the last tick — mirrors CoreSimulator's own recorder, which
-                 // only encodes a frame when the display actually changes (see CLAUDE.md)
-      }
-      lastSeed_ = seed;
-      if (session_ == nullptr) {
-        NSError* setupError = nil;
-        if (!SetUpSession(surface, &setupError)) {
+      try {
+        // Re-resolved every tick, like CaptureScreenshot itself re-resolves the display on every
+        // call, rather than reusing a descriptor cached once in Start() — so a device deleted or
+        // a display disconnected/reconfigured mid-stream surfaces as a real error here instead of
+        // Tick() quietly doing nothing forever (see CLAUDE.md).
+        NSError* resolveError = nil;
+        id descriptor = ResolveCaptureDisplay(device_, options_.displayId, &resolveError);
+        if (descriptor == nil) {
           if (onError_) {
-            onError_(setupError);
+            onError_(resolveError);
           }
           StopFromQueue();
           return;
         }
+        id surfaceObj = CurrentDisplaySurface(descriptor);
+        if (surfaceObj == nil) {
+          return;  // transient — the connection may not have a frame ready yet, try again next tick
+        }
+        IOSurfaceRef surface = (__bridge IOSurfaceRef)surfaceObj;
+        uint32_t seed = IOSurfaceGetSeed(surface);
+        if (seed == lastSeed_) {
+          return;  // unchanged since the last tick — mirrors CoreSimulator's own recorder, which
+                   // only encodes a frame when the display actually changes (see CLAUDE.md)
+        }
+        lastSeed_ = seed;
+        EncodeSurface(surface);
+      } catch (const std::exception& e) {
+        // A dropped display-proxy connection (or any other native failure surfaced as an
+        // exception, e.g. EncodeSurface's VTCompressionSessionEncodeFrame check below) would
+        // otherwise escape this GCD timer handler uncaught, calling std::terminate and crashing
+        // the whole process — unlike every other native call in this addon, which always runs
+        // inside async_bridge.h's Execute(), whose try/catch this bare timer callback doesn't get
+        // for free (see CLAUDE.md).
+        if (onError_) {
+          onError_(MakeError(3, [NSString stringWithFormat:@"Video stream encoding failed: %s", e.what()]));
+        }
+        StopFromQueue();
       }
-      EncodeSurface(surface);
     }
   }
 
@@ -201,26 +258,50 @@ class VideoStreamSession::Impl {
       *error = MakeStatusError(1, @"Failed to create a VTCompressionSession", status);
       return false;
     }
-    VTSessionSetProperty(session_, kVTCompressionPropertyKey_RealTime, kCFBooleanTrue);
-    VTSessionSetProperty(session_, kVTCompressionPropertyKey_AllowFrameReordering, kCFBooleanFalse);
-    VTSessionSetProperty(session_, kVTCompressionPropertyKey_AverageBitRate,
-                          (__bridge CFNumberRef)@(options_.bitrate));
-    VTSessionSetProperty(session_, kVTCompressionPropertyKey_ExpectedFrameRate, (__bridge CFNumberRef)@(options_.fps));
-    VTSessionSetProperty(session_, kVTCompressionPropertyKey_MaxKeyFrameInterval,
-                          (__bridge CFNumberRef)@(static_cast<int>(options_.fps * 2)));
+    // Clamped the same way Start() clamps it for the timer interval — options_.fps itself may be
+    // 0/negative (video-stream.ts validates this, but native code shouldn't trust it blindly);
+    // an unclamped 0 here would set MaxKeyFrameInterval to 0, an out-of-spec value for VideoToolbox.
+    double fps = std::max(options_.fps, 1.0);
+    status = VTSessionSetProperty(session_, kVTCompressionPropertyKey_RealTime, kCFBooleanTrue);
+    if (status == noErr) {
+      status = VTSessionSetProperty(session_, kVTCompressionPropertyKey_AllowFrameReordering, kCFBooleanFalse);
+    }
+    if (status == noErr) {
+      status = VTSessionSetProperty(session_, kVTCompressionPropertyKey_AverageBitRate,
+                                     (__bridge CFNumberRef)@(options_.bitrate));
+    }
+    if (status == noErr) {
+      status = VTSessionSetProperty(session_, kVTCompressionPropertyKey_ExpectedFrameRate, (__bridge CFNumberRef)@(fps));
+    }
+    if (status == noErr) {
+      status = VTSessionSetProperty(session_, kVTCompressionPropertyKey_MaxKeyFrameInterval,
+                                     (__bridge CFNumberRef)@(static_cast<int>(fps * 2)));
+    }
+    if (status != noErr) {
+      *error = MakeStatusError(2, @"Failed to configure the VTCompressionSession", status);
+      VTCompressionSessionInvalidate(session_);
+      CFRelease(session_);
+      session_ = nullptr;
+      return false;
+    }
     VTCompressionSessionPrepareToEncodeFrames(session_);
     return true;
   }
 
   void EncodeSurface(IOSurfaceRef surface) {
     CVPixelBufferRef pixelBuffer = nullptr;
-    CVReturn status = CVPixelBufferCreateWithIOSurface(kCFAllocatorDefault, surface, nullptr, &pixelBuffer);
-    if (status != kCVReturnSuccess || pixelBuffer == nullptr) {
+    CVReturn cvStatus = CVPixelBufferCreateWithIOSurface(kCFAllocatorDefault, surface, nullptr, &pixelBuffer);
+    if (cvStatus != kCVReturnSuccess || pixelBuffer == nullptr) {
       return;  // transient — try again next tick rather than tearing down the whole stream
     }
     CMTime pts = CMTimeMake(static_cast<int64_t>((CFAbsoluteTimeGetCurrent() - startTime_) * 1000000), 1000000);
-    VTCompressionSessionEncodeFrame(session_, pixelBuffer, pts, kCMTimeInvalid, nullptr, nullptr, nullptr);
+    OSStatus status = VTCompressionSessionEncodeFrame(session_, pixelBuffer, pts, kCMTimeInvalid, nullptr, nullptr, nullptr);
     CVPixelBufferRelease(pixelBuffer);
+    if (status != noErr) {
+      throw std::runtime_error(
+          [[NSString stringWithFormat:@"VTCompressionSessionEncodeFrame failed (OSStatus %d)", static_cast<int>(status)]
+              UTF8String]);
+    }
   }
 
   static void OutputCallback(void* outputCallbackRefCon, void* /*sourceFrameRefCon*/, OSStatus status,
@@ -267,7 +348,6 @@ class VideoStreamSession::Impl {
 
   dispatch_queue_t queue_ = nullptr;
   dispatch_source_t timer_ = nullptr;
-  id descriptor_ = nil;
   VTCompressionSessionRef session_ = nullptr;
   uint32_t lastSeed_ = 0;
   uint64_t sequence_ = 0;

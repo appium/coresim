@@ -173,6 +173,21 @@ toolchain (`make` and `xcodebuild`).
   `appium-ios-remotexpc`'s `ScreenStreamCapture` for consistency — but nothing about the transport
   is shared; that reads an RTP feed from real device hardware over a RemoteXPC tunnel, this is
   pure in-process `IOSurface` polling with no real-device analog at all.
+- **A `VideoStream` can never actually be garbage-collected while its stream is still running —
+  not a bug, but worth knowing before "fixing" it.** The `onAccessUnit`/`onError` JS callbacks
+  passed into `startVideoStream` close over the `VideoStream` instance itself; a live
+  `Napi::ThreadSafeFunction` holds a strong/persistent V8 reference to that callback until
+  `.Release()`d (only from `stop()`/`onEnd`), which roots the whole closure chain — so an
+  abandoned, never-`stop()`'d stream can't be collected, and its encoder (and the Node process,
+  since a live `ThreadSafeFunction` keeps the event loop alive) just keeps running forever. This
+  is the same "explicit cleanup required" contract every other live resource in this addon has
+  (a spawned process, an open pasteboard sync, etc.) — confirmed empirically (a deliberately
+  abandoned stream plus two forced `global.gc()` passes never let the process exit). `coresim.mm`'s
+  `NativeVideoStream::Finalize` override (hands teardown off to a background queue instead of
+  blocking synchronously during GC, unlike the default `ObjectWrap` finalizer) is still correct
+  defense-in-depth, but by the above is actually unreachable until *after* an explicit `stop()`
+  has already run and broken the cycle — at which point it's a harmless no-op (`Stop()` is
+  idempotent).
 - **`getAppContainer` is a pure TS convenience wrapper over `appInfo`'s existing `Path`/
   `DataContainer`/`GroupContainers` fields** (see `commands/app.ts`) — no new native call, since
   `propertiesOfApplication:` already reports every container path `simctl get_app_container` does.

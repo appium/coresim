@@ -215,6 +215,21 @@ class NativeVideoStream : public Napi::ObjectWrap<NativeVideoStream> {
     auto session = session_;
     return RunAsyncVoid(env, [session]() { session->Stop(); });
   }
+
+  // If a caller drops a VideoStream without ever calling stop(), the default ObjectWrap
+  // finalizer would run ~VideoStreamSession() (and its blocking Stop(), which dispatch_syncs
+  // onto the encoder's own queue) synchronously on whatever thread GC happens to run on —
+  // possibly Node's main thread, unlike every other blocking call in this addon, which is
+  // explicitly routed off-thread via RunAsync. Overriding Finalize() to hand the last reference
+  // off to a background queue instead avoids that.
+  void Finalize(Napi::Env /*env*/) override {
+    auto session = std::move(session_);
+    if (session) {
+      dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        session->Stop();
+      });
+    }
+  }
 };
 
 NativeVideoStream::NativeVideoStream(const Napi::CallbackInfo& info) : Napi::ObjectWrap<NativeVideoStream>(info) {
@@ -891,8 +906,17 @@ class NativeDevice : public Napi::ObjectWrap<NativeDevice> {
     // from the session's onEnd callback once its polling loop has fully stopped, whether that was
     // triggered by NativeVideoStream::Stop() or the loop failing on its own (see
     // sim_video_stream.h's documented onEnd contract).
+    //
+    // accessUnitTsfn's queue is bounded (unlike every other one-shot-callback ThreadSafeFunction
+    // in this addon, where 0/unbounded is fine): a stream keeps producing access units for as
+    // long as it runs, so a JS consumer that doesn't drain accessUnits() as fast as frames are
+    // produced would otherwise let queued, already-copied Napi::Buffers grow without bound.
+    // BlockingCall (below) naturally applies backpressure once this fills, blocking the
+    // encoder's own queue — i.e. throttling further encoding, not dropping frames — until the
+    // consumer catches up.
+    static constexpr size_t kAccessUnitQueueSize = 60;
     Napi::ThreadSafeFunction accessUnitTsfn =
-        Napi::ThreadSafeFunction::New(env, onAccessUnit, "coresim video stream access unit", 0, 1);
+        Napi::ThreadSafeFunction::New(env, onAccessUnit, "coresim video stream access unit", kAccessUnitQueueSize, 1);
     Napi::ThreadSafeFunction errorTsfn = Napi::ThreadSafeFunction::New(env, onError, "coresim video stream error", 0, 1);
 
     coresim::VideoStreamOptions options{codec, displayId, fps, bitrate};
