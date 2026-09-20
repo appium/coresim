@@ -1,3 +1,5 @@
+import path from 'node:path';
+
 import type {NativeSimctl} from '../native-simctl.js';
 import type {VideoRecordingOptions} from '../types.js';
 import {runCatchingAsync} from '../utils/index.js';
@@ -23,7 +25,8 @@ const activeRecordings = new Set<string>();
  * missing on Xcode 16.4's, present on Xcode 26.5+ (Apple documents no exact version floor).
  *
  * @param udid — UDID of the device to record; must be booted
- * @param outputFile — absolute filesystem path to write the video to
+ * @param outputFile — filesystem path to write the video to; resolved against `process.cwd()` if
+ *   relative, since the native layer requires an absolute path
  * @param options — `displayId`, `codec`, `mask` — see {@link VideoRecordingOptions}
  * @throws {Error} if a recording is already in progress for this device
  */
@@ -37,9 +40,10 @@ export async function startVideoRecording(
   if (activeRecordings.has(key)) {
     throw new Error(`A video recording is already in progress for device '${udid}'`);
   }
+  const absoluteOutputFile = path.resolve(outputFile);
   activeRecordings.add(key);
   try {
-    await runCatchingAsync(async () => (await this._findDevice(udid)).startVideoRecording(outputFile, options));
+    await runCatchingAsync(async () => (await this._findDevice(udid)).startVideoRecording(absoluteOutputFile, options));
   } catch (e) {
     activeRecordings.delete(key);
     throw e;

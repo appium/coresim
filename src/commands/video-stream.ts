@@ -28,7 +28,8 @@ function toTypedError(err: unknown): Error {
  */
 export class VideoStream extends EventEmitter {
   private handle: NativeVideoStreamHandle | undefined;
-  private stopped = false;
+  private readonly stopController = new AbortController();
+  private stopPromise: Promise<void> | undefined;
 
   /** @internal */
   constructor(public readonly codec: 'h264' | 'hevc') {
@@ -59,26 +60,27 @@ export class VideoStream extends EventEmitter {
    * without treating that as an error. Mirrors `ScreenStreamCapture.accessUnits()`'s shape.
    */
   async *accessUnits(signal?: AbortSignal): AsyncGenerator<VideoAccessUnit> {
-    const events = on(this, 'accessUnit', {signal});
+    const combined = signal ? AbortSignal.any([signal, this.stopController.signal]) : this.stopController.signal;
+    const events = on(this, 'accessUnit', {signal: combined});
     try {
       for await (const [unit] of events) {
         yield unit as VideoAccessUnit;
       }
     } catch (err) {
-      if (signal?.aborted) {
+      if (combined.aborted) {
         return;
       }
       throw err;
     }
   }
 
-  /** Stops the stream and releases the underlying encoder. Idempotent. */
+  /** Stops the stream and releases the underlying encoder. Idempotent, including concurrently. */
   async stop(): Promise<void> {
-    if (this.stopped) {
-      return;
-    }
-    this.stopped = true;
-    await this.handle?.stop();
+    this.stopPromise ??= (async () => {
+      this.stopController.abort();
+      await this.handle?.stop();
+    })();
+    return this.stopPromise;
   }
 }
 

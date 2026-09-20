@@ -328,7 +328,9 @@ class VideoStreamSession::Impl {
   dispatch_source_t timer_ = nullptr;
   VTCompressionSessionRef session_ = nullptr;
   uint32_t lastSeed_ = 0;
-  uint64_t sequence_ = 0;
+  // VideoToolbox's output callback isn't documented as single-threaded, so this is read-modify-
+  // written atomically rather than assuming HandleEncodedSample never runs concurrently.
+  std::atomic<uint64_t> sequence_{0};
   double startTime_ = 0;
   std::atomic<bool> running_{false};
 };
