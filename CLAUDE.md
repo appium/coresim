@@ -126,44 +126,31 @@ toolchain (`make` and `xcodebuild`).
   — no entitlement, no temp file, no `simctl` subprocess — see `sim_screenshot.mm` for how the main
   display's IO port is found and rendered to PNG.
 - **Video recording (`startVideoRecording`/`stopVideoRecording`) drives a private CoreSimulator
-  API, reverse-engineered via `strings` on the real `simctl` binary — no public header exists.**
-  The receiver is a separate, device-wide "capture service" descriptor (found by scanning
-  `-[device io] ioPorts` for whichever one responds to `startRecordingFromScreen:...`, see
-  `ResolveVideoCaptureService`), not the display descriptor `getScreenshot` reads (that one is
-  still passed as the `screen` argument) — its real, undocumented protocol name is
-  `SimScreenCaptureService`. If no port responds, `ResolveVideoCaptureService` throws
-  `NativeSimUnavailableError` — confirmed as a genuine floor of Xcode 16.4's CoreSimulator (build
-  1051.17.8), where that port is absent even against its own exactly-matched iOS 18.5 guest, so
-  there's no userland workaround. `SimStreamProcessorProgramInterface`, despite the name, is an
-  unrelated GPU-program execution interface present on every device — not a fallback.
-  `outputFile` must be an `NSString*` absolute path — an
-  `NSURL*` hangs the completion handler forever; an empty `assetWriterOutputSettings` records
-  H.264; `maskPolicy` `0`/`1`/`2` map to ignored/alpha/black, alpha indistinguishable from black.
-  Calling `stop` before `start`'s own completion handler has fired is a silent race
-  (`NSPOSIXErrorDomain(22)` while `start` separately reports success) — `video-recording.ts` tracks
-  one active recording per device, and `start` only ever resolves after CoreSimulator's completion
-  handler fires, so `await start(); await stop();` can't hit it.
-- **Video streaming (`startVideoStream`) uses no private API at all** — `startRecordingFromScreen:`
-  only writes to a file with no per-frame callback. `sim_video_stream.mm` instead polls the same
-  display `IOSurface` `getScreenshot` reads on a GCD timer, skips a tick when `IOSurfaceGetSeed()`
-  is unchanged, and feeds changed frames through a real `VTCompressionSession` (public
-  VideoToolbox) to produce Annex-B H.264/HEVC access units. Teardown needs two paths:
-  `Impl::Stop()` (external callers) `dispatch_sync`s onto the encoder's own queue to drain any
-  in-flight `Tick()`; `Impl::StopFromQueue()` is the same minus that barrier, for when `Tick()`
-  itself triggers teardown (already on that queue — `dispatch_sync`ing onto it would deadlock). An
-  `onEnd` callback, fired exactly once from whichever path wins, is the only reliable point to
-  release the N-API `ThreadSafeFunction`s. Independent of `startVideoRecording` — both, and any
-  number of concurrent streams, can run on the same device. API shape mirrors
-  `appium-ios-remotexpc`'s `ScreenStreamCapture`; the transport is unrelated (in-process `IOSurface`
-  polling here vs. an RTP feed over RemoteXPC there).
+  API, reverse-engineered via `strings` on `simctl` — no public header exists.** The receiver is a
+  separate "capture service" descriptor (protocol `SimScreenCaptureService`), found by scanning
+  `-[device io] ioPorts` for whichever one responds to `startRecordingFromScreen:...`
+  (`ResolveVideoCaptureService`) — distinct from the display descriptor `getScreenshot` reads.
+  `outputFile` must be an `NSString*` absolute path (an `NSURL*` hangs the completion handler
+  forever); `maskPolicy` `0`/`1`/`2` map to ignored/alpha/black, alpha indistinguishable from black.
+  Calling `stop` before `start`'s completion handler has fired is a silent race —
+  `video-recording.ts` avoids it by never resolving `start` early. Throws
+  `NativeSimUnavailableError` if the port is missing entirely, a genuine CoreSimulator-version
+  floor (confirmed on Xcode 16.4) with no userland workaround.
+- **Video streaming (`startVideoStream`) uses no private API** — `startRecordingFromScreen:` only
+  writes to a file with no per-frame callback. `sim_video_stream.mm` instead polls the same display
+  `IOSurface` `getScreenshot` reads on a GCD timer, skips unchanged frames (`IOSurfaceGetSeed()`),
+  and encodes changed ones via a real `VTCompressionSession` (public VideoToolbox) into Annex-B
+  H.264/HEVC. Teardown needs two paths: `Impl::Stop()` (external callers) `dispatch_sync`s onto the
+  encoder queue to drain any in-flight `Tick()`; `Impl::StopFromQueue()` is the same minus that
+  barrier, for when `Tick()` itself triggers teardown (already on that queue — `dispatch_sync`ing
+  there would deadlock). `onEnd`, fired once from whichever path wins, is the only safe point to
+  release the N-API `ThreadSafeFunction`s. Independent of `startVideoRecording` — any number of
+  streams and one recording can run concurrently.
 - **A `VideoStream` can't actually be garbage-collected while running — not a bug.** Its
   `onAccessUnit`/`onError` callbacks close over the `VideoStream` itself, and a live
   `Napi::ThreadSafeFunction` holds a persistent V8 reference to them until `.Release()`d (only via
-  `stop()`/`onEnd`), rooting the whole chain. An abandoned, never-`stop()`'d stream — and the Node
-  process, since a live TSFN keeps the event loop alive — just runs forever, same as any other
-  unclosed live resource in this addon. `NativeVideoStream::Finalize` (hands teardown to a
-  background queue instead of blocking during GC) is still correct defense-in-depth, but is
-  actually unreachable until after an explicit `stop()` already broke the cycle.
+  `stop()`/`onEnd`), rooting the whole chain and keeping the event loop alive. An abandoned, never-
+  `stop()`'d stream just runs forever, same as any other unclosed live resource in this addon.
 - **`getAppContainer` is a pure TS convenience wrapper over `appInfo`'s existing `Path`/
   `DataContainer`/`GroupContainers` fields** (see `commands/app.ts`) — no new native call, since
   `propertiesOfApplication:` already reports every container path `simctl get_app_container` does.
