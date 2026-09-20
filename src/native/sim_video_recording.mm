@@ -27,7 +27,12 @@ id IdGetter(id target, const std::string& selectorName) {
 
 // The device-wide "capture service" port that answers these selectors — distinct from the display
 // descriptor passed as `screen` below. Found by scanning ioPorts for whichever descriptor
-// responds, since no protocol exists to check against (see CLAUDE.md).
+// responds, since no protocol exists to check against (see CLAUDE.md). Throws
+// NativeSimUnavailableError (not NSError**) when nothing responds — this is a version-support gap,
+// not an operational failure, so it should flow through the same "unavailable" path as a missing
+// selector elsewhere; the exact descriptor classes scanned are folded into the error's `detail` so
+// a future CI failure on an unfamiliar Xcode/CoreSimulator pairing is diagnosable from the error
+// message alone.
 id ResolveVideoCaptureService(id device, NSError** error) {
   static const std::string kStartRecordingSelector =
       "startRecordingFromScreen:maskPolicy:assetWriterOutputSettings:outputFile:completionQueue:completionHandler:";
@@ -38,15 +43,21 @@ id ResolveVideoCaptureService(id device, NSError** error) {
   }
   NSArray* ports = IdGetter(ioClient, "ioPorts");
   SEL selector = NSSelectorFromString(@(kStartRecordingSelector.c_str()));
+  NSMutableArray<NSString*>* descriptorClasses = [NSMutableArray array];
   for (id port in ports) {
     id descriptor = IdGetter(port, "descriptor");
-    if (descriptor != nil && [descriptor respondsToSelector:selector]) {
+    if (descriptor == nil) {
+      continue;
+    }
+    if ([descriptor respondsToSelector:selector]) {
       return descriptor;
     }
+    [descriptorClasses addObject:NSStringFromClass([descriptor class])];
   }
-  *error = MakeError(2, @"No video capture service was found on this device — video recording may "
-                        @"not be supported on this CoreSimulator version");
-  return nil;
+  std::string detail = CoreSimulatorFrameworkVersion() + " — scanned " + std::to_string(descriptorClasses.count) +
+                       " ioPort descriptor(s): [" +
+                       std::string(([descriptorClasses componentsJoinedByString:@", "] ?: @"").UTF8String) + "]";
+  throw NativeSimUnavailableError("selector", kStartRecordingSelector, detail);
 }
 
 }  // namespace

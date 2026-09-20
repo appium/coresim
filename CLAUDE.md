@@ -130,7 +130,11 @@ toolchain (`make` and `xcodebuild`).
   The receiver is a separate, device-wide "capture service" descriptor (found by scanning
   `-[device io] ioPorts` for whichever one responds to `startRecordingFromScreen:...`, see
   `ResolveVideoCaptureService`), not the display descriptor `getScreenshot` reads (that one is
-  still passed as the `screen` argument). `outputFile` must be an `NSString*` absolute path — an
+  still passed as the `screen` argument). If no port responds, `ResolveVideoCaptureService` throws
+  `NativeSimUnavailableError` (not an `NSError`) — confirmed in CI on an older Xcode's CoreSimulator
+  driving a much newer guest runtime (a pairing the runner has installed but Xcode itself never
+  shipped); the thrown error's `detail` lists every scanned descriptor class for that case.
+  `outputFile` must be an `NSString*` absolute path — an
   `NSURL*` hangs the completion handler forever; an empty `assetWriterOutputSettings` records
   H.264; `maskPolicy` `0`/`1`/`2` map to ignored/alpha/black, alpha indistinguishable from black.
   Calling `stop` before `start`'s own completion handler has fired is a silent race

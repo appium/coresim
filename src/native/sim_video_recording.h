@@ -15,12 +15,15 @@ enum class VideoMaskPolicy : long long {
 
 // Starts recording `displayId` (nil = primary) to `outputFile`, an absolute path, not a URL (see
 // CLAUDE.md). Returns NO+*error on synchronous resolution failure (`handler` never called then);
-// otherwise `handler` fires once the first frame is recorded, non-nil NSError on failure.
+// otherwise `handler` fires once the first frame is recorded, non-nil NSError on failure. Throws
+// NativeSimUnavailableError (not NO+*error) if this CoreSimulator has no video capture service at
+// all — a genuine version-support gap, not an operational failure.
 BOOL StartVideoRecording(id device, NSString* displayId, VideoMaskPolicy mask, NSDictionary* assetWriterOutputSettings,
                          NSString* outputFile, dispatch_queue_t queue, void (^handler)(NSError*), NSError** error);
 
 // Stops the recording started by StartVideoRecording. Must not be called before its `handler` has
 // already fired — see CLAUDE.md for the race that otherwise causes a silent empty-file failure.
+// Throws NativeSimUnavailableError under the same condition as StartVideoRecording above.
 BOOL StopVideoRecording(id device, dispatch_queue_t queue, void (^handler)(NSError*), NSError** error);
 
 }  // namespace coresim

@@ -46,6 +46,12 @@ on:
         required: false
         default: false
         type: boolean
+      install-ffmpeg:
+        description: Install ffmpeg (brings ffprobe too) so codec/decode assertions in the video
+          recording/streaming tests run instead of skipping
+        required: false
+        default: false
+        type: boolean
       timeout-minutes:
         description: Job-level timeout backstop — real simulator boot on a CI runner is far
           slower than on real hardware, so integration callers should raise this well above the
@@ -103,6 +109,10 @@ jobs:
       - name: Rebuild native addon via xcodebuild (warnings as errors)
         if: ${{ inputs.run-xcodebuild-check }}
         run: npm run build:addon:xcodebuild
+
+      - name: Install ffmpeg
+        if: ${{ inputs.install-ffmpeg }}
+        run: brew install ffmpeg
 
       - name: Show selected Xcode and available simulator runtimes
         run: |
