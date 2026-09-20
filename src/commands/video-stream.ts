@@ -1,5 +1,7 @@
 import {EventEmitter, on} from 'node:events';
 
+import {logger} from '@appium/support';
+
 import {wrapNativeError} from '../errors.js';
 import type {NativeSimctl} from '../native-simctl.js';
 import type {NativeVideoStreamHandle, VideoAccessUnit, VideoStreamOptions} from '../types.js';
@@ -10,6 +12,8 @@ declare module '../native-simctl.js' {
     startVideoStream(udid: string, options?: VideoStreamOptions): Promise<VideoStream>;
   }
 }
+
+const log = logger.getLogger('CoreSim');
 
 /** `wrapNativeError` always throws — this just gets its thrown value back as a plain return, to emit rather than raise it. */
 function toTypedError(err: unknown): Error {
@@ -34,9 +38,6 @@ export class VideoStream extends EventEmitter {
   /** @internal */
   constructor(public readonly codec: 'h264' | 'hevc') {
     super();
-    // Baseline listener so emit('error', ...) below never crashes the process before the caller's
-    // own accessUnits() loop (which adds its own listener) has started consuming.
-    this.on('error', () => {});
   }
 
   /** @internal */
@@ -44,9 +45,19 @@ export class VideoStream extends EventEmitter {
     this.emit('accessUnit', unit);
   }
 
-  /** @internal */
+  /**
+   * @internal
+   * `EventEmitter` throws (crashing the process) if `emit('error', ...)` has no listener — but an
+   * active `accessUnits()` consumer counts as one (`events.on()` registers its own internally), so
+   * this only needs to fall back to logging when nobody is actually able to observe the error.
+   */
   _handleError(err: unknown): void {
-    this.emit('error', toTypedError(err));
+    const error = toTypedError(err);
+    if (this.listenerCount('error') > 0) {
+      this.emit('error', error);
+    } else {
+      log.error(`Unhandled VideoStream error: ${error.stack ?? error}`);
+    }
   }
 
   /** @internal */
@@ -61,8 +72,10 @@ export class VideoStream extends EventEmitter {
    */
   async *accessUnits(signal?: AbortSignal): AsyncGenerator<VideoAccessUnit> {
     const combined = signal ? AbortSignal.any([signal, this.stopController.signal]) : this.stopController.signal;
-    const events = on(this, 'accessUnit', {signal: combined});
     try {
+      // on() itself throws synchronously if `combined` is already aborted — kept inside this try
+      // (not hoisted above it) so that case returns cleanly like an abort during iteration does.
+      const events = on(this, 'accessUnit', {signal: combined});
       for await (const [unit] of events) {
         yield unit as VideoAccessUnit;
       }

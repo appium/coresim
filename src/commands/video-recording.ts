@@ -41,6 +41,9 @@ export async function startVideoRecording(
     throw new Error(`A video recording is already in progress for device '${udid}'`);
   }
   const absoluteOutputFile = path.resolve(outputFile);
+  // Marked before the native call, not after it resolves, so a concurrent startVideoRecording for
+  // the same device is rejected immediately instead of racing this one — rolled back below on
+  // failure.
   activeRecordings.add(key);
   try {
     await runCatchingAsync(async () => (await this._findDevice(udid)).startVideoRecording(absoluteOutputFile, options));
