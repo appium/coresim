@@ -27,8 +27,7 @@ id IdGetter(id target, const std::string& selectorName) {
 
 // The device-wide "capture service" port (real protocol: SimScreenCaptureService — see CLAUDE.md),
 // distinct from the display descriptor passed as `screen` below. Found by scanning ioPorts since
-// no header exists. Throws NativeSimUnavailableError (not NSError**) if absent, with every scanned
-// descriptor class folded into `detail` for diagnosability.
+// no header exists. Throws NativeSimUnavailableError (not NSError**) if absent.
 id ResolveVideoCaptureService(id device, NSError** error) {
   static const std::string kStartRecordingSelector =
       "startRecordingFromScreen:maskPolicy:assetWriterOutputSettings:outputFile:completionQueue:completionHandler:";
@@ -39,21 +38,13 @@ id ResolveVideoCaptureService(id device, NSError** error) {
   }
   NSArray* ports = IdGetter(ioClient, "ioPorts");
   SEL selector = NSSelectorFromString(@(kStartRecordingSelector.c_str()));
-  NSMutableArray<NSString*>* descriptorClasses = [NSMutableArray array];
   for (id port in ports) {
     id descriptor = IdGetter(port, "descriptor");
-    if (descriptor == nil) {
-      continue;
-    }
-    if ([descriptor respondsToSelector:selector]) {
+    if (descriptor != nil && [descriptor respondsToSelector:selector]) {
       return descriptor;
     }
-    [descriptorClasses addObject:NSStringFromClass([descriptor class])];
   }
-  std::string detail = CoreSimulatorFrameworkVersion() + " — scanned " + std::to_string(descriptorClasses.count) +
-                       " ioPort descriptor(s): [" +
-                       std::string(([descriptorClasses componentsJoinedByString:@", "] ?: @"").UTF8String) + "]";
-  throw NativeSimUnavailableError("selector", kStartRecordingSelector, detail);
+  throw NativeSimUnavailableError("selector", kStartRecordingSelector, CoreSimulatorFrameworkVersion());
 }
 
 }  // namespace
