@@ -27,15 +27,9 @@ id IdGetter(id target, const std::string& selectorName) {
   });
 }
 
-// The one (private, headerless) `-[device io] ioPorts` descriptor that answers
-// startRecordingFromScreen:.../stopRecordingWithCompletionQueue:... — a different object than the
-// renderable display descriptor sim_screenshot.mm resolves (that one is the `screen` *argument*
-// these selectors take, not their receiver — confirmed empirically by UUID match against a real
-// `simctl io screenshot`'s reported display). There's no protocol name to
-// -conformsToProtocol: against (no header exists for it — reverse-engineered from `strings` on the
-// real `simctl` binary, see CLAUDE.md), so the only way to find it is to scan every port's
-// descriptor for whichever one responds to the selector. Confirmed empirically to be a single,
-// stable, device-wide port regardless of how many displays the device has.
+// The device-wide "capture service" port that answers these selectors — distinct from the display
+// descriptor passed as `screen` below. Found by scanning ioPorts for whichever descriptor
+// responds, since no protocol exists to check against (see CLAUDE.md).
 id ResolveVideoCaptureService(id device, NSError** error) {
   static const std::string kStartRecordingSelector =
       "startRecordingFromScreen:maskPolicy:assetWriterOutputSettings:outputFile:completionQueue:completionHandler:";

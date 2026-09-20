@@ -197,10 +197,8 @@ struct AddonInstanceData {
 
 }  // namespace
 
-// Wraps a live coresim::VideoStreamSession (sim_video_stream.mm) — returned by
-// NativeDevice::StartVideoStream below once the encoder's polling loop has actually started.
-// Access units/errors are delivered live via the callbacks passed directly to startVideoStream,
-// not through this object — the only thing JS needs from it is `stop()`.
+// Wraps a live coresim::VideoStreamSession. Access units/errors are delivered live via the
+// callbacks passed directly to startVideoStream, not through this object — it only exposes `stop()`.
 class NativeVideoStream : public Napi::ObjectWrap<NativeVideoStream> {
  public:
   static void Init(Napi::Env env);
@@ -216,12 +214,8 @@ class NativeVideoStream : public Napi::ObjectWrap<NativeVideoStream> {
     return RunAsyncVoid(env, [session]() { session->Stop(); });
   }
 
-  // If a caller drops a VideoStream without ever calling stop(), the default ObjectWrap
-  // finalizer would run ~VideoStreamSession() (and its blocking Stop(), which dispatch_syncs
-  // onto the encoder's own queue) synchronously on whatever thread GC happens to run on —
-  // possibly Node's main thread, unlike every other blocking call in this addon, which is
-  // explicitly routed off-thread via RunAsync. Overriding Finalize() to hand the last reference
-  // off to a background queue instead avoids that.
+  // Hands teardown off to a background queue instead of letting the default finalizer run
+  // ~VideoStreamSession()'s blocking Stop() synchronously on whatever thread GC runs on.
   void Finalize(Napi::Env /*env*/) override {
     auto session = std::move(session_);
     if (session) {
@@ -786,15 +780,8 @@ class NativeDevice : public Napi::ObjectWrap<NativeDevice> {
         [](Napi::Env env, NSArray* result) -> Napi::Value { return NSObjectToJsValue(env, result); });
   }
 
-  // Mirrors `simctl io <udid> recordVideo` — see sim_video_recording.mm for how this drives
-  // CoreSimulator's own frame-capture-and-encode pipeline directly (no subprocess, no manual
-  // AVFoundation encoding on this addon's own side). Resolves once the first frame has actually
-  // been recorded, matching simctl's own "Recording started" signal — safe to call
-  // StopVideoRecording immediately after this resolves; calling it any earlier hits a real,
-  // empirically confirmed CoreSimulator race (see CLAUDE.md). `mask`/`codec` are this addon's own
-  // options, not passed through as-is — commands/video-recording.ts already constrains them to a
-  // known set of strings, so anything else (including absent) just falls back to the default here
-  // rather than being validated again.
+  // Mirrors `simctl io <udid> recordVideo` (see sim_video_recording.mm). Resolves once the first
+  // frame is recorded — see CLAUDE.md for the race hit by calling StopVideoRecording any earlier.
   Napi::Value StartVideoRecording(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     id device = device_;
@@ -866,15 +853,9 @@ class NativeDevice : public Napi::ObjectWrap<NativeDevice> {
     });
   }
 
-  // Mirrors appium-ios-remotexpc's ScreenStreamCapture shape (start()/accessUnits()/stop() —
-  // wired up on the TS side, commands/video-stream.ts) for API consistency, though the two are
-  // otherwise unrelated: that reads an RTP feed the real device's own hardware encoder produces
-  // over the network; this polls the same live framebuffer IOSurface getScreenshot/
-  // startVideoRecording already read (see sim_video_stream.mm) and encodes it in real time via
-  // the public VideoToolbox API — no private API, no file, no subprocess. `onAccessUnit`/
-  // `onError` are invoked repeatedly, live, for as long as the stream runs; the returned
-  // NativeVideoStream's `stop()` tears the encoder down and is the only other thing JS needs from
-  // it — access units/errors never flow through it directly.
+  // Real-time encoding via public VideoToolbox APIs (see sim_video_stream.mm) — no private API,
+  // no file. `onAccessUnit`/`onError` are invoked live for as long as the stream runs; the
+  // returned NativeVideoStream only exposes `stop()`.
   Napi::Value StartVideoStream(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     id device = device_;
@@ -902,18 +883,11 @@ class NativeDevice : public Napi::ObjectWrap<NativeDevice> {
     Napi::Function onError = info[2].As<Napi::Function>();
 
     // Must be constructed on the main thread, like Spawn's own exitTsfn above; released exactly
-    // once each — either below (if Start() throws before the encoder ever actually begins) or
-    // from the session's onEnd callback once its polling loop has fully stopped, whether that was
-    // triggered by NativeVideoStream::Stop() or the loop failing on its own (see
-    // sim_video_stream.h's documented onEnd contract).
+    // once each, via onEnd (see sim_video_stream.h).
     //
-    // accessUnitTsfn's queue is bounded (unlike every other one-shot-callback ThreadSafeFunction
-    // in this addon, where 0/unbounded is fine): a stream keeps producing access units for as
-    // long as it runs, so a JS consumer that doesn't drain accessUnits() as fast as frames are
-    // produced would otherwise let queued, already-copied Napi::Buffers grow without bound.
-    // BlockingCall (below) naturally applies backpressure once this fills, blocking the
-    // encoder's own queue — i.e. throttling further encoding, not dropping frames — until the
-    // consumer catches up.
+    // accessUnitTsfn's queue is bounded, unlike every other one-shot-callback ThreadSafeFunction
+    // in this addon — a slow-draining consumer would otherwise let queued frame buffers grow
+    // unbounded; BlockingCall below naturally throttles the encoder once this fills instead.
     static constexpr size_t kAccessUnitQueueSize = 60;
     Napi::ThreadSafeFunction accessUnitTsfn =
         Napi::ThreadSafeFunction::New(env, onAccessUnit, "coresim video stream access unit", kAccessUnitQueueSize, 1);

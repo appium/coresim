@@ -22,13 +22,9 @@ function toTypedError(err: unknown): Error {
 
 /**
  * A live video stream from `NativeSimctl.startVideoStream` — encodes the device's display in real
- * time via VideoToolbox (see native/sim_video_stream.mm), unlike `startVideoRecording`, which
- * drives CoreSimulator's own private, file-only recorder.
- *
- * Mirrors the `start()`/`accessUnits()`/`stop()` shape `appium-ios-remotexpc`'s own
- * `ScreenStreamCapture` uses for real-device streaming, for API consistency — though the two are
- * otherwise unrelated: that reads an RTP feed the device's own hardware encoder produces over the
- * network; this reads the Simulator's live framebuffer in-process and encodes it itself.
+ * time via VideoToolbox, unlike `startVideoRecording`, which drives CoreSimulator's own private,
+ * file-only recorder. Mirrors `appium-ios-remotexpc`'s `ScreenStreamCapture` shape
+ * (`accessUnits()`/`stop()`) for API consistency; the transport is otherwise unrelated.
  */
 export class VideoStream extends EventEmitter {
   private handle: NativeVideoStreamHandle | undefined;
@@ -37,13 +33,8 @@ export class VideoStream extends EventEmitter {
   /** @internal */
   constructor(public readonly codec: 'h264' | 'hevc') {
     super();
-    // Without a baseline listener, emit('error', ...) below crashes the whole process (Node's
-    // EventEmitter default behavior) whenever it fires while nobody's actively consuming
-    // accessUnits() yet — e.g. right after startVideoStream() resolves, before the caller's own
-    // `for await` loop has started. accessUnits()'s own `on()`-based listener (added once
-    // consumption starts) still receives and throws every error into the generator as documented;
-    // this only exists to make emitting one always safe, never to swallow it from an active
-    // consumer.
+    // Baseline listener so emit('error', ...) below never crashes the process before the caller's
+    // own accessUnits() loop (which adds its own listener) has started consuming.
     this.on('error', () => {});
   }
 
@@ -92,15 +83,10 @@ export class VideoStream extends EventEmitter {
 }
 
 /**
- * Starts encoding the device's display in real time and streaming it as it's produced — unlike
- * {@link NativeSimctl.startVideoRecording}, which drives CoreSimulator's own private, file-only
- * recorder, this reads the same live framebuffer directly and encodes it itself via VideoToolbox
- * (see native/sim_video_stream.mm), so it can deliver access units live instead of only ever
- * producing a finished file. Resolves once the encoder has actually started; the returned
- * {@link VideoStream}'s `accessUnits()` then yields each encoded frame as it arrives.
- *
- * Independent of `startVideoRecording`/`stopVideoRecording` — both can run concurrently on the
- * same device, and there's no limit on the number of concurrent streams.
+ * Starts encoding the device's display in real time. Resolves once the encoder has actually
+ * started; the returned {@link VideoStream}'s `accessUnits()` then yields each frame as it
+ * arrives. Independent of `startVideoRecording`/`stopVideoRecording` — both, and any number of
+ * concurrent streams, can run on the same device at once.
  *
  * @param udid — UDID of the device to stream; must be booted
  * @param options — `displayId`, `codec`, `fps`, `bitrate` — see {@link VideoStreamOptions}

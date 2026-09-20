@@ -135,19 +135,12 @@ export interface VideoRecordingOptions {
    * (falling back to the first renderable display if none is primary, e.g. tvOS).
    */
   displayId?: string;
-  /**
-   * Video codec — `'h264'` or `'hevc'`. Defaults to CoreSimulator's own default (`'h264'`) when
-   * omitted — distinct from `simctl io recordVideo`'s own CLI-level default of `'hevc'`, which is
-   * simply `simctl` always passing the key explicitly.
-   */
+  /** Video codec — `'h264'` (default) or `'hevc'`. */
   codec?: 'h264' | 'hevc';
   /**
-   * For a non-rectangular display (e.g. one with a Dynamic Island cutout), how the mask is
-   * handled:
-   * - `'ignored'` (default): the unmasked framebuffer is saved.
-   * - `'alpha'`: not supported — recorded identically to `'black'` (kept for parity with
-   *   `simctl`'s own `--mask` flag, which documents the same limitation).
-   * - `'black'`: the mask is rendered black.
+   * For a non-rectangular display (e.g. a Dynamic Island cutout): `'ignored'` (default) saves the
+   * unmasked framebuffer, `'black'` renders the mask black, `'alpha'` is not supported and
+   * behaves like `'black'`.
    */
   mask?: 'ignored' | 'alpha' | 'black';
 }
@@ -162,10 +155,8 @@ export interface VideoStreamOptions {
   /** Video codec — `'h264'` (default) or `'hevc'`. */
   codec?: 'h264' | 'hevc';
   /**
-   * How often the encoder polls the framebuffer for a new frame, in frames/sec. A frame that
-   * hasn't actually changed since the last poll is never re-encoded (matching
-   * `startVideoRecording`'s own CoreSimulator-driven behavior), so this is an upper bound on
-   * output frame rate, not a guarantee. Defaults to 15.
+   * Max frames/sec to poll the framebuffer at — an unchanged frame is never re-encoded, so this
+   * is an upper bound, not a guarantee. Defaults to 15.
    */
   fps?: number;
   /** Target average bitrate, in bits/sec. Defaults to 2,000,000 (2 Mbps). */
@@ -173,10 +164,8 @@ export interface VideoStreamOptions {
 }
 
 /**
- * One encoded frame from `VideoStream.accessUnits()` — Annex-B start-code-prefixed H.264/HEVC NAL
- * units, ready to feed directly into an Annex-B-aware decoder/muxer (e.g. ffmpeg's `-f h264`/`-f
- * hevc` demuxers). A keyframe's `data` has the stream's parameter sets (SPS/PPS, or VPS/SPS/PPS
- * for HEVC) prepended, making every keyframe self-decodable on its own.
+ * One encoded frame from `VideoStream.accessUnits()` — Annex-B NAL units. A keyframe's `data` has
+ * parameter sets (SPS/PPS, or VPS/SPS/PPS for HEVC) prepended, so it's self-decodable alone.
  */
 export interface VideoAccessUnit {
   data: Buffer;

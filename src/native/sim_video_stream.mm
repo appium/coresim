@@ -104,25 +104,19 @@ class VideoStreamSession::Impl {
       throw NSErrorException(MakeError(4, @"The device's display surface is not available yet"));
     }
     IOSurfaceRef surface = (__bridge IOSurfaceRef)surfaceObj;
-    // Set up the compression session synchronously, here, rather than lazily on the first Tick()
-    // — so a setup failure (e.g. an unsupported width/height/codec combination) rejects
-    // StartVideoStream()'s own promise directly instead of only reaching the caller via onError,
-    // which they might not be listening for yet (see CLAUDE.md).
+    // Set up synchronously (not lazily on the first Tick()) so a setup failure rejects Start()
+    // directly rather than only reaching onError, which the caller may not be listening for yet.
     NSError* setupError = nil;
     if (!SetUpSession(surface, &setupError)) {
       throw NSErrorException(setupError);
     }
-    // Set before the initial EncodeSurface call below, not after — EncodeSurface/HandleEncodedSample
-    // both compute elapsed time from startTime_, so the very first access unit needs it set first
-    // too, exactly like every later one.
+    // Must be set before EncodeSurface below — both it and HandleEncodedSample measure elapsed
+    // time from this.
     startTime_ = CFAbsoluteTimeGetCurrent();
-    // Encode the current frame immediately rather than waiting for the timer's first tick to see
-    // a *changed* seed — a freshly created session hasn't encoded anything yet, so without this
-    // the stream would stay silent until the display actually changes again. Done here, before
-    // running_ is set true, so a failure tears session_ down itself: once running_ is true, that
-    // job belongs to Stop()/onEnd_ (see TearDownSessionAndFireEnd), and firing onEnd_ this early
-    // would double-release the ThreadSafeFunctions StartVideoStream's own catch block already
-    // releases on a Start() failure (see coresim.mm).
+    // Encode immediately rather than waiting for a *changed* seed on the first tick, or the
+    // stream would stay silent until the display changes again. running_ is still false here, so
+    // a failure tears session_ down itself instead of going through Stop()/onEnd_ (see
+    // coresim.mm — onEnd_ firing this early would double-release its ThreadSafeFunctions).
     try {
       EncodeSurface(surface);
     } catch (...) {
@@ -138,10 +132,8 @@ class VideoStreamSession::Impl {
     dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, queue_);
     dispatch_source_set_timer(timer, dispatch_time(DISPATCH_TIME_NOW, 0), static_cast<uint64_t>(interval * NSEC_PER_SEC),
                                static_cast<uint64_t>(interval * NSEC_PER_SEC / 10));
-    // `this` outlives the timer: Stop() either runs on `queue_` itself (the internal failure
-    // path, safe — a serial queue can't be running two things at once) or cancels the timer and
-    // dispatch_sync()s onto `queue_` from elsewhere first (the external path) — either way, by
-    // the time `this` could be destroyed, no invocation of this handler is in flight or pending.
+    // `this` outlives the timer: Stop()/StopFromQueue() always drain or outrun it before `this`
+    // can be destroyed (see their comments below).
     dispatch_source_set_event_handler(timer, ^{
       Tick();
     });
@@ -156,9 +148,8 @@ class VideoStreamSession::Impl {
     }
     if (timer_ != nullptr) {
       dispatch_source_cancel(timer_);
-      // Blocks until any Tick() already running has finished and none more will start — by
-      // then, running_ is already false, so even a Tick() that was mid-flight when cancel() was
-      // called will see it and return without touching session_ again.
+      // Blocks until any in-flight Tick() finishes — by then running_ is already false, so it
+      // won't touch session_ again.
       dispatch_sync(queue_, ^{
       });
       timer_ = nullptr;
@@ -167,10 +158,8 @@ class VideoStreamSession::Impl {
   }
 
  private:
-  // Same effect as Stop(), minus the dispatch_sync barrier — safe to call from within Tick()
-  // itself (already executing serially on `queue_`, so no barrier is needed to know nothing else
-  // is running concurrently with it) but never from any other thread, where skipping the barrier
-  // would race a Tick() that's already in flight.
+  // Same as Stop() minus the dispatch_sync barrier — only safe from within Tick() itself, already
+  // serialized on `queue_`; would race a concurrent Tick() from any other thread.
   void StopFromQueue() {
     if (!running_.exchange(false)) {
       return;  // idempotent — e.g. an external Stop() already won this race
@@ -184,14 +173,9 @@ class VideoStreamSession::Impl {
 
   void TearDownSessionAndFireEnd() {
     if (session_ != nullptr) {
-      // VTCompressionSessionCreate's completion callback isn't bound to `queue_` and isn't
-      // guaranteed to fire synchronously with the encode call that triggered it — without this
-      // flush, a frame submitted just before Stop() could still have HandleEncodedSample fire
-      // (on some VideoToolbox-owned thread) after the ThreadSafeFunctions below are released,
-      // which is a use-after-release. VTCompressionSessionCompleteFrames blocks until every
-      // already-submitted frame's callback has actually returned, on whatever thread it runs on,
-      // closing that window — any such trailing callback still safely no-ops on its own, since
-      // HandleEncodedSample's `!running_` check is already true by the time this runs.
+      // Flushes and blocks until every already-submitted frame's callback has returned — without
+      // this, a frame submitted just before Stop() could fire after onEnd_ releases the
+      // ThreadSafeFunctions below (a use-after-release; see CLAUDE.md).
       VTCompressionSessionCompleteFrames(session_, kCMTimeInvalid);
       VTCompressionSessionInvalidate(session_);
       CFRelease(session_);
@@ -208,10 +192,9 @@ class VideoStreamSession::Impl {
     }
     @autoreleasepool {
       try {
-        // Re-resolved every tick, like CaptureScreenshot itself re-resolves the display on every
-        // call, rather than reusing a descriptor cached once in Start() — so a device deleted or
-        // a display disconnected/reconfigured mid-stream surfaces as a real error here instead of
-        // Tick() quietly doing nothing forever (see CLAUDE.md).
+        // Re-resolved every tick (like CaptureScreenshot does), not cached once in Start(), so a
+        // deleted device or disconnected display surfaces a real error instead of Tick() quietly
+        // doing nothing forever.
         NSError* resolveError = nil;
         id descriptor = ResolveCaptureDisplay(device_, options_.displayId, &resolveError);
         if (descriptor == nil) {
@@ -234,12 +217,8 @@ class VideoStreamSession::Impl {
         lastSeed_ = seed;
         EncodeSurface(surface);
       } catch (const std::exception& e) {
-        // A dropped display-proxy connection (or any other native failure surfaced as an
-        // exception, e.g. EncodeSurface's VTCompressionSessionEncodeFrame check below) would
-        // otherwise escape this GCD timer handler uncaught, calling std::terminate and crashing
-        // the whole process — unlike every other native call in this addon, which always runs
-        // inside async_bridge.h's Execute(), whose try/catch this bare timer callback doesn't get
-        // for free (see CLAUDE.md).
+        // Without this, an exception here (e.g. a dropped display-proxy connection) would escape
+        // this bare GCD timer handler uncaught and crash the whole process (see CLAUDE.md).
         if (onError_) {
           onError_(MakeError(3, [NSString stringWithFormat:@"Video stream encoding failed: %s", e.what()]));
         }
@@ -258,9 +237,8 @@ class VideoStreamSession::Impl {
       *error = MakeStatusError(1, @"Failed to create a VTCompressionSession", status);
       return false;
     }
-    // Clamped the same way Start() clamps it for the timer interval — options_.fps itself may be
-    // 0/negative (video-stream.ts validates this, but native code shouldn't trust it blindly);
-    // an unclamped 0 here would set MaxKeyFrameInterval to 0, an out-of-spec value for VideoToolbox.
+    // Clamped like Start()'s timer interval — an unvalidated 0 here would set MaxKeyFrameInterval
+    // to an out-of-spec value.
     double fps = std::max(options_.fps, 1.0);
     status = VTSessionSetProperty(session_, kVTCompressionPropertyKey_RealTime, kCFBooleanTrue);
     if (status == noErr) {

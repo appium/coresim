@@ -583,9 +583,7 @@ describe('NativeSimctl integration', () => {
           throw err;
         }
 
-        // Toggling appearance repaints the whole screen, forcing real frames to be encoded — an
-        // idle screen otherwise yields just the initial keyframe (mirrors startVideoRecording's
-        // own "only encode on change" behavior, see CLAUDE.md).
+        // Toggling appearance repaints the screen, forcing frames beyond the initial keyframe.
         let dark = 0;
         const wiggle = setInterval(() => {
           dark = 1 - dark;
