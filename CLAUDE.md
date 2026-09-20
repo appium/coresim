@@ -146,6 +146,33 @@ toolchain (`make` and `xcodebuild`).
   per device and this addon's async methods only ever resolve `start` after CoreSimulator's own
   completion handler (not just the call) has fired, so an `await start(); await stop();` sequence
   in JS can never hit this race.
+- **Video streaming (`startVideoStream`) is a completely different mechanism from video
+  recording — it uses no private API at all.** `startRecordingFromScreen:...` only ever writes to
+  a file with no per-frame callback, so live access units aren't obtainable from it. Instead,
+  `sim_video_stream.mm` polls the same renderable display `IOSurface` `getScreenshot` reads
+  (`ResolveCaptureDisplay`/`CurrentDisplaySurface`, both exposed from `sim_screenshot.h` for this)
+  on a GCD timer, skips a tick when `IOSurfaceGetSeed()` hasn't changed (mirroring
+  `startVideoRecording`'s own "only encode on change" behavior), and feeds changed frames through
+  a real `VTCompressionSession` (public VideoToolbox API) to produce actual H.264/HEVC access
+  units — Annex-B framed, keyframes with parameter sets (SPS/PPS, or VPS/SPS/PPS for HEVC)
+  prepended so every keyframe is self-decodable alone. Verified empirically:
+  `ffmpeg`/`ffprobe`-decoded output for both codecs, and 8 rapid start/stop cycles (including
+  stopping within 5ms of starting) with zero crashes and a clean process exit afterward (no leaked
+  `Napi::ThreadSafeFunction` keeping the event loop alive). The tricky part was teardown ordering:
+  `VideoStreamSession::Stop()` (external callers) must `dispatch_sync` onto the encoder's own
+  serial queue to guarantee no `Tick()` is still in flight before tearing down, but the *same*
+  teardown triggered internally, from inside a failing `Tick()` itself, must skip that
+  `dispatch_sync` (already executing serially on that queue — `dispatch_sync`ing onto your own
+  currently-running queue deadlocks) — see `Impl::Stop()` vs. `Impl::StopFromQueue()`. An `onEnd`
+  callback (fired exactly once, from whichever teardown path wins a race between the two) is the
+  only reliable point to release the N-API `ThreadSafeFunction`s — neither `onAccessUnit` nor
+  `onError` has a "this was the last call" signal of its own. Independent of `startVideoRecording`
+  entirely: both can run concurrently on the same device, and multiple concurrent streams are
+  allowed (no `commands/video-recording.ts`-style one-per-device tracking here). API shape
+  (`start()`/`accessUnits()` async generator/`stop()`) deliberately mirrors
+  `appium-ios-remotexpc`'s `ScreenStreamCapture` for consistency — but nothing about the transport
+  is shared; that reads an RTP feed from real device hardware over a RemoteXPC tunnel, this is
+  pure in-process `IOSurface` polling with no real-device analog at all.
 - **`getAppContainer` is a pure TS convenience wrapper over `appInfo`'s existing `Path`/
   `DataContainer`/`GroupContainers` fields** (see `commands/app.ts`) — no new native call, since
   `propertiesOfApplication:` already reports every container path `simctl get_app_container` does.

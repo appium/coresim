@@ -1,0 +1,289 @@
+#include "sim_video_stream.h"
+
+#import <CoreMedia/CoreMedia.h>
+#import <CoreVideo/CoreVideo.h>
+#import <IOSurface/IOSurface.h>
+#import <VideoToolbox/VideoToolbox.h>
+
+#include <algorithm>
+#include <atomic>
+
+#include "nserror_bridge.h"
+#include "safe_dispatch.h"
+#include "sim_screenshot.h"
+
+namespace coresim {
+
+namespace {
+
+NSString* const kVideoStreamErrorDomain = @"com.appium.coresim.VideoStream";
+
+NSError* MakeError(NSInteger code, NSString* message) {
+  return [NSError errorWithDomain:kVideoStreamErrorDomain
+                              code:code
+                          userInfo:@{NSLocalizedDescriptionKey : message}];
+}
+
+NSError* MakeStatusError(NSInteger code, NSString* what, OSStatus status) {
+  return MakeError(code, [NSString stringWithFormat:@"%@ (OSStatus %d)", what, static_cast<int>(status)]);
+}
+
+void AppendAnnexB(std::vector<uint8_t>& out, const uint8_t* nal, size_t length) {
+  static const uint8_t kStartCode[4] = {0, 0, 0, 1};
+  out.insert(out.end(), kStartCode, kStartCode + 4);
+  out.insert(out.end(), nal, nal + length);
+}
+
+// VideoToolbox's compressed output is AVCC-framed (a 4-byte big-endian length prefix per NAL,
+// no start codes) — rewrites it into Annex-B, matching VideoAccessUnit's documented wire format.
+void AppendSampleBufferNALs(std::vector<uint8_t>& out, CMSampleBufferRef sampleBuffer) {
+  CMBlockBufferRef block = CMSampleBufferGetDataBuffer(sampleBuffer);
+  if (block == nullptr) {
+    return;
+  }
+  size_t totalLength = 0;
+  char* dataPointer = nullptr;
+  if (CMBlockBufferGetDataPointer(block, 0, nullptr, &totalLength, &dataPointer) != kCMBlockBufferNoErr) {
+    return;
+  }
+  size_t offset = 0;
+  while (offset + 4 <= totalLength) {
+    uint32_t nalLength = (static_cast<uint8_t>(dataPointer[offset]) << 24) |
+                          (static_cast<uint8_t>(dataPointer[offset + 1]) << 16) |
+                          (static_cast<uint8_t>(dataPointer[offset + 2]) << 8) |
+                          static_cast<uint8_t>(dataPointer[offset + 3]);
+    offset += 4;
+    if (nalLength == 0 || offset + nalLength > totalLength) {
+      break;
+    }
+    AppendAnnexB(out, reinterpret_cast<const uint8_t*>(dataPointer + offset), nalLength);
+    offset += nalLength;
+  }
+}
+
+using ParameterSetAtIndexFn = OSStatus (*)(CMFormatDescriptionRef, size_t, const uint8_t**, size_t*, size_t*, int*);
+
+void AppendParameterSets(std::vector<uint8_t>& out, CMFormatDescriptionRef format, ParameterSetAtIndexFn getAtIndex) {
+  size_t count = 0;
+  if (getAtIndex(format, 0, nullptr, nullptr, &count, nullptr) != noErr) {
+    return;
+  }
+  for (size_t i = 0; i < count; i++) {
+    const uint8_t* bytes = nullptr;
+    size_t size = 0;
+    if (getAtIndex(format, i, &bytes, &size, nullptr, nullptr) == noErr) {
+      AppendAnnexB(out, bytes, size);
+    }
+  }
+}
+
+}  // namespace
+
+class VideoStreamSession::Impl {
+ public:
+  Impl(id device, VideoStreamOptions options, std::function<void(VideoAccessUnit)> onAccessUnit,
+       std::function<void(NSError*)> onError, std::function<void()> onEnd)
+      : device_(device),
+        options_(options),
+        onAccessUnit_(std::move(onAccessUnit)),
+        onError_(std::move(onError)),
+        onEnd_(std::move(onEnd)) {
+    queue_ = dispatch_queue_create("com.appium.coresim.videoStream", DISPATCH_QUEUE_SERIAL);
+  }
+
+  ~Impl() { Stop(); }
+
+  void Start() {
+    NSError* error = nil;
+    descriptor_ = ResolveCaptureDisplay(device_, options_.displayId, &error);
+    if (descriptor_ == nil) {
+      throw NSErrorException(error);
+    }
+    startTime_ = CFAbsoluteTimeGetCurrent();
+    running_ = true;
+
+    double interval = 1.0 / std::max(options_.fps, 1.0);
+    dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, queue_);
+    dispatch_source_set_timer(timer, dispatch_time(DISPATCH_TIME_NOW, 0), static_cast<uint64_t>(interval * NSEC_PER_SEC),
+                               static_cast<uint64_t>(interval * NSEC_PER_SEC / 10));
+    // `this` outlives the timer: Stop() either runs on `queue_` itself (the internal failure
+    // path, safe — a serial queue can't be running two things at once) or cancels the timer and
+    // dispatch_sync()s onto `queue_` from elsewhere first (the external path) — either way, by
+    // the time `this` could be destroyed, no invocation of this handler is in flight or pending.
+    dispatch_source_set_event_handler(timer, ^{
+      Tick();
+    });
+    timer_ = timer;
+    dispatch_resume(timer_);
+  }
+
+  // Callable from any thread except `queue_` itself (would deadlock on the dispatch_sync below).
+  void Stop() {
+    if (!running_.exchange(false)) {
+      return;  // idempotent
+    }
+    if (timer_ != nullptr) {
+      dispatch_source_cancel(timer_);
+      // Blocks until any Tick() already running has finished and none more will start — by
+      // then, running_ is already false, so even a Tick() that was mid-flight when cancel() was
+      // called will see it and return without touching session_ again.
+      dispatch_sync(queue_, ^{
+      });
+      timer_ = nullptr;
+    }
+    TearDownSessionAndFireEnd();
+  }
+
+ private:
+  // Same effect as Stop(), minus the dispatch_sync barrier — safe to call from within Tick()
+  // itself (already executing serially on `queue_`, so no barrier is needed to know nothing else
+  // is running concurrently with it) but never from any other thread, where skipping the barrier
+  // would race a Tick() that's already in flight.
+  void StopFromQueue() {
+    if (!running_.exchange(false)) {
+      return;  // idempotent — e.g. an external Stop() already won this race
+    }
+    if (timer_ != nullptr) {
+      dispatch_source_cancel(timer_);
+      timer_ = nullptr;
+    }
+    TearDownSessionAndFireEnd();
+  }
+
+  void TearDownSessionAndFireEnd() {
+    if (session_ != nullptr) {
+      VTCompressionSessionInvalidate(session_);
+      CFRelease(session_);
+      session_ = nullptr;
+    }
+    if (onEnd_) {
+      onEnd_();
+    }
+  }
+
+  void Tick() {
+    if (!running_) {
+      return;
+    }
+    @autoreleasepool {
+      id surfaceObj = CurrentDisplaySurface(descriptor_);
+      if (surfaceObj == nil) {
+        return;  // transient — the connection may not have a frame ready yet, try again next tick
+      }
+      IOSurfaceRef surface = (__bridge IOSurfaceRef)surfaceObj;
+      uint32_t seed = IOSurfaceGetSeed(surface);
+      if (session_ != nullptr && seed == lastSeed_) {
+        return;  // unchanged since the last tick — mirrors CoreSimulator's own recorder, which
+                 // only encodes a frame when the display actually changes (see CLAUDE.md)
+      }
+      lastSeed_ = seed;
+      if (session_ == nullptr) {
+        NSError* setupError = nil;
+        if (!SetUpSession(surface, &setupError)) {
+          if (onError_) {
+            onError_(setupError);
+          }
+          StopFromQueue();
+          return;
+        }
+      }
+      EncodeSurface(surface);
+    }
+  }
+
+  bool SetUpSession(IOSurfaceRef surface, NSError** error) {
+    int32_t width = static_cast<int32_t>(IOSurfaceGetWidth(surface));
+    int32_t height = static_cast<int32_t>(IOSurfaceGetHeight(surface));
+    CMVideoCodecType codecType = options_.codec == VideoStreamCodec::kHEVC ? kCMVideoCodecType_HEVC : kCMVideoCodecType_H264;
+    OSStatus status = VTCompressionSessionCreate(kCFAllocatorDefault, width, height, codecType, nullptr, nullptr,
+                                                  kCFAllocatorDefault, OutputCallback, this, &session_);
+    if (status != noErr) {
+      *error = MakeStatusError(1, @"Failed to create a VTCompressionSession", status);
+      return false;
+    }
+    VTSessionSetProperty(session_, kVTCompressionPropertyKey_RealTime, kCFBooleanTrue);
+    VTSessionSetProperty(session_, kVTCompressionPropertyKey_AllowFrameReordering, kCFBooleanFalse);
+    VTSessionSetProperty(session_, kVTCompressionPropertyKey_AverageBitRate,
+                          (__bridge CFNumberRef)@(options_.bitrate));
+    VTSessionSetProperty(session_, kVTCompressionPropertyKey_ExpectedFrameRate, (__bridge CFNumberRef)@(options_.fps));
+    VTSessionSetProperty(session_, kVTCompressionPropertyKey_MaxKeyFrameInterval,
+                          (__bridge CFNumberRef)@(static_cast<int>(options_.fps * 2)));
+    VTCompressionSessionPrepareToEncodeFrames(session_);
+    return true;
+  }
+
+  void EncodeSurface(IOSurfaceRef surface) {
+    CVPixelBufferRef pixelBuffer = nullptr;
+    CVReturn status = CVPixelBufferCreateWithIOSurface(kCFAllocatorDefault, surface, nullptr, &pixelBuffer);
+    if (status != kCVReturnSuccess || pixelBuffer == nullptr) {
+      return;  // transient — try again next tick rather than tearing down the whole stream
+    }
+    CMTime pts = CMTimeMake(static_cast<int64_t>((CFAbsoluteTimeGetCurrent() - startTime_) * 1000000), 1000000);
+    VTCompressionSessionEncodeFrame(session_, pixelBuffer, pts, kCMTimeInvalid, nullptr, nullptr, nullptr);
+    CVPixelBufferRelease(pixelBuffer);
+  }
+
+  static void OutputCallback(void* outputCallbackRefCon, void* /*sourceFrameRefCon*/, OSStatus status,
+                              VTEncodeInfoFlags /*infoFlags*/, CMSampleBufferRef sampleBuffer) {
+    static_cast<Impl*>(outputCallbackRefCon)->HandleEncodedSample(status, sampleBuffer);
+  }
+
+  void HandleEncodedSample(OSStatus status, CMSampleBufferRef sampleBuffer) {
+    if (status != noErr || sampleBuffer == nullptr || !running_) {
+      return;
+    }
+    bool isKeyFrame = true;
+    CFArrayRef attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, false);
+    if (attachments != nullptr && CFArrayGetCount(attachments) > 0) {
+      CFDictionaryRef attachment = static_cast<CFDictionaryRef>(CFArrayGetValueAtIndex(attachments, 0));
+      isKeyFrame = !CFDictionaryContainsKey(attachment, kCMSampleAttachmentKey_NotSync);
+    }
+
+    VideoAccessUnit unit;
+    unit.isKeyFrame = isKeyFrame;
+    unit.sequence = sequence_++;
+    unit.timestampMicros = static_cast<int64_t>((CFAbsoluteTimeGetCurrent() - startTime_) * 1000000);
+    if (isKeyFrame) {
+      CMFormatDescriptionRef format = CMSampleBufferGetFormatDescription(sampleBuffer);
+      if (format != nullptr) {
+        if (options_.codec == VideoStreamCodec::kHEVC) {
+          AppendParameterSets(unit.data, format, CMVideoFormatDescriptionGetHEVCParameterSetAtIndex);
+        } else {
+          AppendParameterSets(unit.data, format, CMVideoFormatDescriptionGetH264ParameterSetAtIndex);
+        }
+      }
+    }
+    AppendSampleBufferNALs(unit.data, sampleBuffer);
+    if (onAccessUnit_) {
+      onAccessUnit_(std::move(unit));
+    }
+  }
+
+  id device_;
+  VideoStreamOptions options_;
+  std::function<void(VideoAccessUnit)> onAccessUnit_;
+  std::function<void(NSError*)> onError_;
+  std::function<void()> onEnd_;
+
+  dispatch_queue_t queue_ = nullptr;
+  dispatch_source_t timer_ = nullptr;
+  id descriptor_ = nil;
+  VTCompressionSessionRef session_ = nullptr;
+  uint32_t lastSeed_ = 0;
+  uint64_t sequence_ = 0;
+  double startTime_ = 0;
+  std::atomic<bool> running_{false};
+};
+
+VideoStreamSession::VideoStreamSession(id device, VideoStreamOptions options,
+                                        std::function<void(VideoAccessUnit)> onAccessUnit,
+                                        std::function<void(NSError*)> onError, std::function<void()> onEnd)
+    : impl_(std::make_unique<Impl>(device, options, std::move(onAccessUnit), std::move(onError), std::move(onEnd))) {}
+
+VideoStreamSession::~VideoStreamSession() = default;
+
+void VideoStreamSession::Start() { impl_->Start(); }
+
+void VideoStreamSession::Stop() { impl_->Stop(); }
+
+}  // namespace coresim

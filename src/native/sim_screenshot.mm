@@ -152,6 +152,8 @@ id ResolveCaptureDisplay(id device, NSString* displayId, NSError** error) {
   return ResolveDisplayDescriptor(candidates, displayId, error);
 }
 
+id CurrentDisplaySurface(id descriptor) { return RenderableSurface(descriptor); }
+
 NSArray<NSDictionary*>* ListDisplays(id device, NSError** error) {
   NSArray<NSDictionary*>* candidates = RenderableDisplayCandidates(device, error);
   if (candidates == nil) {

@@ -18,6 +18,13 @@ NSArray<NSDictionary*>* ListDisplays(id device, NSError** error);
 // `screen` argument. Same displayId/fallback semantics as CaptureScreenshot (see below).
 id ResolveCaptureDisplay(id device, NSString* displayId, NSError** error);
 
+// The display descriptor's current framebuffer, as an `IOSurfaceRef` (bridge-cast the returned
+// `id`) — the same surface CaptureScreenshot itself reads. Exposed for sim_video_stream.mm, which
+// polls it repeatedly rather than reading it once. Returns nil if the surface isn't available yet
+// (e.g. the connection just dropped) — not an error, since that can legitimately happen from one
+// call to the next on a live device.
+id CurrentDisplaySurface(id descriptor);
+
 enum class ScreenshotFormat { kPNG, kJPEG };
 
 // Captures a display as an image, reading the same in-process framebuffer surface `simctl io

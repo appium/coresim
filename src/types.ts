@@ -152,6 +152,41 @@ export interface VideoRecordingOptions {
   mask?: 'ignored' | 'alpha' | 'black';
 }
 
+/** Options for `NativeSimctl.startVideoStream`. */
+export interface VideoStreamOptions {
+  /**
+   * Which display to stream, by `id` from `getDisplays()`. Defaults to the primary display
+   * (falling back to the first renderable display if none is primary, e.g. tvOS).
+   */
+  displayId?: string;
+  /** Video codec — `'h264'` (default) or `'hevc'`. */
+  codec?: 'h264' | 'hevc';
+  /**
+   * How often the encoder polls the framebuffer for a new frame, in frames/sec. A frame that
+   * hasn't actually changed since the last poll is never re-encoded (matching
+   * `startVideoRecording`'s own CoreSimulator-driven behavior), so this is an upper bound on
+   * output frame rate, not a guarantee. Defaults to 15.
+   */
+  fps?: number;
+  /** Target average bitrate, in bits/sec. Defaults to 2,000,000 (2 Mbps). */
+  bitrate?: number;
+}
+
+/**
+ * One encoded frame from `VideoStream.accessUnits()` — Annex-B start-code-prefixed H.264/HEVC NAL
+ * units, ready to feed directly into an Annex-B-aware decoder/muxer (e.g. ffmpeg's `-f h264`/`-f
+ * hevc` demuxers). A keyframe's `data` has the stream's parameter sets (SPS/PPS, or VPS/SPS/PPS
+ * for HEVC) prepended, making every keyframe self-decodable on its own.
+ */
+export interface VideoAccessUnit {
+  data: Buffer;
+  isKeyFrame: boolean;
+  /** Monotonically increasing per stream, starting at 0. */
+  sequence: number;
+  /** Microseconds since the stream started. */
+  timestampMicros: number;
+}
+
 /**
  * Options for `NativeSimctl.spawnProcess`, passed through to CoreSimulator's
  * `spawnWithPath:options:terminationQueue:terminationHandler:error:`. Only keys confirmed
@@ -254,6 +289,22 @@ export interface NativeSpawnResult {
  */
 export type NativeSpawnExitCallback = (code: number | null, signal: number | null) => void;
 
+/** Raw shape of an access unit as the native addon delivers it — see {@link VideoAccessUnit}. */
+export interface NativeVideoAccessUnit {
+  data: Buffer;
+  isKeyFrame: boolean;
+  sequence: number;
+  timestampMicros: number;
+}
+
+export type NativeVideoAccessUnitCallback = (unit: NativeVideoAccessUnit) => void;
+export type NativeVideoErrorCallback = (err: Error) => void;
+
+/** A live encoder session, wrapped by `coresim.mm`'s `NativeVideoStream` — what `NativeDeviceHandle.startVideoStream()` resolves to. */
+export interface NativeVideoStreamHandle {
+  stop(): Promise<void>;
+}
+
 /** A `SimDevice`, wrapped by `coresim.mm`'s `NativeDevice` — what `NativeSimctl`'s `_findDevice()` resolves to. */
 export interface NativeDeviceHandle {
   // Trivial in-memory accessors — kept synchronous on the native side (see coresim.mm), never a
@@ -307,6 +358,11 @@ export interface NativeDeviceHandle {
     options?: {displayId?: string; codec?: 'h264' | 'hevc'; mask?: 'ignored' | 'alpha' | 'black'},
   ): Promise<void>;
   stopVideoRecording(): Promise<void>;
+  startVideoStream(
+    options: {displayId?: string; codec?: 'h264' | 'hevc'; fps?: number; bitrate?: number} | undefined,
+    onAccessUnit: NativeVideoAccessUnitCallback,
+    onError: NativeVideoErrorCallback,
+  ): Promise<NativeVideoStreamHandle>;
   spawn(path: string, options: SpawnOptions | undefined, onExit: NativeSpawnExitCallback): Promise<NativeSpawnResult>;
 }
 
