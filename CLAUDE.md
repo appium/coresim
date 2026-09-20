@@ -133,10 +133,11 @@ toolchain (`make` and `xcodebuild`).
   still passed as the `screen` argument) — its real (undocumented) protocol name is
   `SimScreenCaptureService`, confirmed by dumping ROCKRemoteProxy class names at runtime (they
   encode every protocol a proxy conforms to). If no port responds, `ResolveVideoCaptureService`
-  throws `NativeSimUnavailableError` (not an `NSError`); confirmed in CI on an old Xcode driving a
-  much newer guest, where the `SimScreenCaptureService` port is entirely absent, not just
-  non-responding — the host's own CoreSimulator build decides which IO ports a device gets, so an
-  old host that predates this service has no userland workaround.
+  throws `NativeSimUnavailableError` (not an `NSError`) — confirmed on Xcode 16.4's CoreSimulator
+  (build 1051.17.8), where the `SimScreenCaptureService` port is entirely absent even against that
+  Xcode's own exactly-matched guest runtime (iOS 18.5), ruling out a guest-version mismatch as the
+  cause. The host's own CoreSimulator build decides which IO ports a device gets, so an old host
+  that predates this service has no userland workaround — recording is simply unsupported there.
   `SimStreamProcessorProgramInterface` is a red herring despite the name — present on every device
   regardless of version, it's a generic GPU-program execution interface, unrelated to recording.
   `outputFile` must be an `NSString*` absolute path — an
