@@ -18,7 +18,9 @@ const activeRecordings = new Set<string>();
  * Starts recording the device's display to `outputFile` — the native equivalent of `simctl io
  * <udid> recordVideo`. Resolves once the first frame has actually been recorded, so it's always
  * safe to call {@link stopVideoRecording} immediately after. Only one recording may be active per
- * device at a time; starting a second one while the first is still running rejects.
+ * device at a time; starting a second one while the first is still running rejects. Rejects with
+ * `NativeSimUnavailableError` if this CoreSimulator predates the private capture API — confirmed
+ * missing on Xcode 16.4's, present on Xcode 26.5+ (Apple documents no exact version floor).
  *
  * @param udid — UDID of the device to record; must be booted
  * @param outputFile — absolute filesystem path to write the video to

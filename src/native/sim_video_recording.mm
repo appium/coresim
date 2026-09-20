@@ -25,14 +25,10 @@ id IdGetter(id target, const std::string& selectorName) {
   });
 }
 
-// The device-wide "capture service" port that answers these selectors — distinct from the display
-// descriptor passed as `screen` below. Found by scanning ioPorts for whichever descriptor
-// responds, since no protocol exists to check against (see CLAUDE.md). Throws
-// NativeSimUnavailableError (not NSError**) when nothing responds — this is a version-support gap,
-// not an operational failure, so it should flow through the same "unavailable" path as a missing
-// selector elsewhere; the exact descriptor classes scanned are folded into the error's `detail` so
-// a future CI failure on an unfamiliar Xcode/CoreSimulator pairing is diagnosable from the error
-// message alone.
+// The device-wide "capture service" port (real protocol: SimScreenCaptureService — see CLAUDE.md),
+// distinct from the display descriptor passed as `screen` below. Found by scanning ioPorts since
+// no header exists. Throws NativeSimUnavailableError (not NSError**) if absent, with every scanned
+// descriptor class folded into `detail` for diagnosability.
 id ResolveVideoCaptureService(id device, NSError** error) {
   static const std::string kStartRecordingSelector =
       "startRecordingFromScreen:maskPolicy:assetWriterOutputSettings:outputFile:completionQueue:completionHandler:";

@@ -135,9 +135,8 @@ function compareVersions(a: string, b: string): number {
 
 /**
  * `"18.5"` for the iOS Simulator SDK the active Xcode actually ships, or `null` if unparseable.
- * Xcode's own version number stopped tracking the iOS version it bundles around Xcode 16
- * (Xcode 16.4 ships the iOS 18.5 SDK, not "16.x") — this reads the real bundled version instead of
- * assuming the two share a major.minor.
+ * Xcode's own version stopped tracking the iOS version it bundles around Xcode 16 (16.4 ships the
+ * 18.5 SDK, not "16.x") — this reads the real bundled version instead of assuming they match.
  */
 function activeSimulatorSdkVersion(): string | null {
   const output = execFileSync('xcrun', ['--sdk', 'iphonesimulator', '--show-sdk-version'], {encoding: 'utf8'});

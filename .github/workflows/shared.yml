@@ -47,8 +47,7 @@ on:
         default: false
         type: boolean
       install-ffmpeg:
-        description: Install ffmpeg (brings ffprobe too) so codec/decode assertions in the video
-          recording/streaming tests run instead of skipping
+        description: Install ffmpeg (and ffprobe) so video codec/decode assertions run instead of skipping
         required: false
         default: false
         type: boolean

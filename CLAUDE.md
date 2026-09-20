@@ -130,16 +130,12 @@ toolchain (`make` and `xcodebuild`).
   The receiver is a separate, device-wide "capture service" descriptor (found by scanning
   `-[device io] ioPorts` for whichever one responds to `startRecordingFromScreen:...`, see
   `ResolveVideoCaptureService`), not the display descriptor `getScreenshot` reads (that one is
-  still passed as the `screen` argument) — its real (undocumented) protocol name is
-  `SimScreenCaptureService`, confirmed by dumping ROCKRemoteProxy class names at runtime (they
-  encode every protocol a proxy conforms to). If no port responds, `ResolveVideoCaptureService`
-  throws `NativeSimUnavailableError` (not an `NSError`) — confirmed on Xcode 16.4's CoreSimulator
-  (build 1051.17.8), where the `SimScreenCaptureService` port is entirely absent even against that
-  Xcode's own exactly-matched guest runtime (iOS 18.5), ruling out a guest-version mismatch as the
-  cause. The host's own CoreSimulator build decides which IO ports a device gets, so an old host
-  that predates this service has no userland workaround — recording is simply unsupported there.
-  `SimStreamProcessorProgramInterface` is a red herring despite the name — present on every device
-  regardless of version, it's a generic GPU-program execution interface, unrelated to recording.
+  still passed as the `screen` argument) — its real, undocumented protocol name is
+  `SimScreenCaptureService`. If no port responds, `ResolveVideoCaptureService` throws
+  `NativeSimUnavailableError` — confirmed as a genuine floor of Xcode 16.4's CoreSimulator (build
+  1051.17.8), where that port is absent even against its own exactly-matched iOS 18.5 guest, so
+  there's no userland workaround. `SimStreamProcessorProgramInterface`, despite the name, is an
+  unrelated GPU-program execution interface present on every device — not a fallback.
   `outputFile` must be an `NSString*` absolute path — an
   `NSURL*` hangs the completion handler forever; an empty `assetWriterOutputSettings` records
   H.264; `maskPolicy` `0`/`1`/`2` map to ignored/alpha/black, alpha indistinguishable from black.

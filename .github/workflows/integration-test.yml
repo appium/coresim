@@ -30,8 +30,7 @@ jobs:
       # Cheap to run per Xcode version here (no simulator boot involved) and gives warnings-as-
       # errors coverage across the same Xcode/CoreSimulator versions the functional tests cover.
       run-xcodebuild-check: true
-      # Without ffmpeg/ffprobe, several video recording/streaming assertions (codec/decode
-      # validation) silently skip instead of actually running — see test/fixtures.ts's hasFfmpeg().
+      # Without this, video codec/decode assertions silently skip — see test/fixtures.ts's hasFfmpeg().
       install-ffmpeg: true
       # Real simulator boot/create/delete on a CI runner is far slower than on real hardware —
       # this only needs to cover ONE boot cycle per Xcode version since test/integration shares a
