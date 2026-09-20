@@ -133,24 +133,30 @@ function compareVersions(a: string, b: string): number {
   return 0;
 }
 
-/** `"26.4"` for "Xcode 26.4.1", or `null` if unparseable. */
-function activeXcodeMajorMinor(): string | null {
-  const output = execFileSync('xcodebuild', ['-version'], {encoding: 'utf8'});
-  const match = /^Xcode (\d+)\.(\d+)/.exec(output);
+/**
+ * `"18.5"` for the iOS Simulator SDK the active Xcode actually ships, or `null` if unparseable.
+ * Xcode's own version number stopped tracking the iOS version it bundles around Xcode 16
+ * (Xcode 16.4 ships the iOS 18.5 SDK, not "16.x") — this reads the real bundled version instead of
+ * assuming the two share a major.minor.
+ */
+function activeSimulatorSdkVersion(): string | null {
+  const output = execFileSync('xcrun', ['--sdk', 'iphonesimulator', '--show-sdk-version'], {encoding: 'utf8'});
+  const match = /^(\d+)\.(\d+)/.exec(output.trim());
   return match ? `${match[1]}.${match[2]}` : null;
 }
 
 // CI runner images pre-install several simulator runtimes as shared, Xcode-independent volumes
 // (simctl list runtimes shows iOS 26.2/26.4/26.5 regardless of the active Xcode) — fixtures[0]
 // would pick an arbitrary one instead of the runtime the job's matrix entry actually asked for.
-// Prefer a runtime matching the active Xcode's major.minor; fall back to the newest installed.
+// Prefer the runtime matching the active Xcode's own bundled SDK version; fall back to the newest
+// installed only if that exact runtime isn't present.
 function selectTarget(fixtures: RuntimeFixture[]): RuntimeFixture[] {
   if (fixtures.length === 0) {
     return [];
   }
-  const xcodeVersion = activeXcodeMajorMinor();
-  const exactMatch = xcodeVersion
-    ? fixtures.find((f) => f.runtimeVersion === xcodeVersion || f.runtimeVersion.startsWith(`${xcodeVersion}.`))
+  const sdkVersion = activeSimulatorSdkVersion();
+  const exactMatch = sdkVersion
+    ? fixtures.find((f) => f.runtimeVersion === sdkVersion || f.runtimeVersion.startsWith(`${sdkVersion}.`))
     : undefined;
   return [exactMatch ?? [...fixtures].sort((a, b) => compareVersions(b.runtimeVersion, a.runtimeVersion))[0]];
 }
