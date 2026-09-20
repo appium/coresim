@@ -125,6 +125,27 @@ toolchain (`make` and `xcodebuild`).
 - **Screenshot capture (`getScreenshot`) reads the device's live framebuffer `IOSurface` in-process**
   — no entitlement, no temp file, no `simctl` subprocess — see `sim_screenshot.mm` for how the main
   display's IO port is found and rendered to PNG.
+- **Video recording (`startVideoRecording`/`stopVideoRecording`) drives a private CoreSimulator API
+  directly, reverse-engineered via `strings` on the real `simctl` binary — no public header exists.**
+  The receiver isn't the renderable display descriptor `getScreenshot` reads
+  (`sim_screenshot.mm`'s `ResolveCaptureDisplay`, which that descriptor is still passed as the
+  `screen` *argument*) — it's a separate, device-wide "capture service" descriptor found by
+  scanning `-[device io] ioPorts` for whichever one responds to
+  `startRecordingFromScreen:maskPolicy:assetWriterOutputSettings:outputFile:completionQueue:completionHandler:`
+  (see `sim_video_recording.mm`'s `ResolveVideoCaptureService`). Confirmed empirically (real
+  recordings, `ffprobe`-validated against real `xcrun simctl io recordVideo` output): `outputFile`
+  must be an `NSString*` absolute path — an `NSURL*` reliably hangs the completion handler forever
+  instead of erroring; an empty `assetWriterOutputSettings` records H.264 (CoreSimulator's own
+  default, distinct from `simctl`'s CLI-level HEVC default — `simctl` just always passes the
+  codec key); `maskPolicy` `0`/`1`/`2` map to ignored/alpha/black, with alpha indistinguishable
+  from black in the actual captured pixels (matches `simctl`'s own `--mask` help text). Calling
+  `stopRecordingWithCompletionQueue:completionHandler:` before `startRecordingFromScreen:...`'s own
+  completion handler has fired is a real, silent race — no crash, but `stop` reports
+  `NSPOSIXErrorDomain(22)` ("No recording in progress") while `start` separately reports success,
+  net effect an empty file — this is why `commands/video-recording.ts` tracks one active recording
+  per device and this addon's async methods only ever resolve `start` after CoreSimulator's own
+  completion handler (not just the call) has fired, so an `await start(); await stop();` sequence
+  in JS can never hit this race.
 - **`getAppContainer` is a pure TS convenience wrapper over `appInfo`'s existing `Path`/
   `DataContainer`/`GroupContainers` fields** (see `commands/app.ts`) — no new native call, since
   `propertiesOfApplication:` already reports every container path `simctl get_app_container` does.

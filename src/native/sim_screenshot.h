@@ -12,6 +12,12 @@ namespace coresim {
 // array means the device has an IO client but no renderable display.
 NSArray<NSDictionary*>* ListDisplays(id device, NSError** error);
 
+// Resolves the renderable display descriptor CaptureScreenshot itself reads from, without also
+// capturing a screenshot — exposed (beyond CaptureScreenshot/ListDisplays) for
+// sim_video_recording.mm's StartVideoRecording, which needs the same descriptor object as its own
+// `screen` argument. Same displayId/fallback semantics as CaptureScreenshot (see below).
+id ResolveCaptureDisplay(id device, NSString* displayId, NSError** error);
+
 enum class ScreenshotFormat { kPNG, kJPEG };
 
 // Captures a display as an image, reading the same in-process framebuffer surface `simctl io

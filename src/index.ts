@@ -20,4 +20,5 @@ export {
   type SimProcessInfo,
   type SimRuntimeInfo,
   type SpawnOptions,
+  type VideoRecordingOptions,
 } from './types.js';

@@ -128,6 +128,30 @@ export interface ScreenshotOptions {
   quality?: number;
 }
 
+/** Options for `NativeSimctl.startVideoRecording`. */
+export interface VideoRecordingOptions {
+  /**
+   * Which display to record, by `id` from `getDisplays()`. Defaults to the primary display
+   * (falling back to the first renderable display if none is primary, e.g. tvOS).
+   */
+  displayId?: string;
+  /**
+   * Video codec — `'h264'` or `'hevc'`. Defaults to CoreSimulator's own default (`'h264'`) when
+   * omitted — distinct from `simctl io recordVideo`'s own CLI-level default of `'hevc'`, which is
+   * simply `simctl` always passing the key explicitly.
+   */
+  codec?: 'h264' | 'hevc';
+  /**
+   * For a non-rectangular display (e.g. one with a Dynamic Island cutout), how the mask is
+   * handled:
+   * - `'ignored'` (default): the unmasked framebuffer is saved.
+   * - `'alpha'`: not supported — recorded identically to `'black'` (kept for parity with
+   *   `simctl`'s own `--mask` flag, which documents the same limitation).
+   * - `'black'`: the mask is rendered black.
+   */
+  mask?: 'ignored' | 'alpha' | 'black';
+}
+
 /**
  * Options for `NativeSimctl.spawnProcess`, passed through to CoreSimulator's
  * `spawnWithPath:options:terminationQueue:terminationHandler:error:`. Only keys confirmed
@@ -278,6 +302,11 @@ export interface NativeDeviceHandle {
   getWebInspectorSocket(): Promise<string>;
   screenshot(options?: {format?: 'png' | 'jpeg'; displayId?: string; quality?: number}): Promise<Buffer>;
   getDisplays(): Promise<SimDisplayInfo[]>;
+  startVideoRecording(
+    outputFile: string,
+    options?: {displayId?: string; codec?: 'h264' | 'hevc'; mask?: 'ignored' | 'alpha' | 'black'},
+  ): Promise<void>;
+  stopVideoRecording(): Promise<void>;
   spawn(path: string, options: SpawnOptions | undefined, onExit: NativeSpawnExitCallback): Promise<NativeSpawnResult>;
 }
 

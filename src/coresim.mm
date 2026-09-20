@@ -10,6 +10,7 @@
 
 #include <napi.h>
 
+#import <AVFoundation/AVFoundation.h>
 #import <Foundation/Foundation.h>
 
 #include <sys/wait.h>
@@ -30,6 +31,7 @@
 #include "native/sim_process.h"
 #include "native/sim_screenshot.h"
 #include "native/sim_service_context.h"
+#include "native/sim_video_recording.h"
 #include "native/tcc_privacy.h"
 #include "native/value_bridge.h"
 
@@ -727,6 +729,86 @@ class NativeDevice : public Napi::ObjectWrap<NativeDevice> {
         [](Napi::Env env, NSArray* result) -> Napi::Value { return NSObjectToJsValue(env, result); });
   }
 
+  // Mirrors `simctl io <udid> recordVideo` — see sim_video_recording.mm for how this drives
+  // CoreSimulator's own frame-capture-and-encode pipeline directly (no subprocess, no manual
+  // AVFoundation encoding on this addon's own side). Resolves once the first frame has actually
+  // been recorded, matching simctl's own "Recording started" signal — safe to call
+  // StopVideoRecording immediately after this resolves; calling it any earlier hits a real,
+  // empirically confirmed CoreSimulator race (see CLAUDE.md). `mask`/`codec` are this addon's own
+  // options, not passed through as-is — commands/video-recording.ts already constrains them to a
+  // known set of strings, so anything else (including absent) just falls back to the default here
+  // rather than being validated again.
+  Napi::Value StartVideoRecording(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    id device = device_;
+    NSString* outputFile = @(info[0].As<Napi::String>().Utf8Value().c_str());
+    NSString* displayId = nil;
+    coresim::VideoMaskPolicy mask = coresim::VideoMaskPolicy::kIgnored;
+    NSDictionary* assetWriterOutputSettings = @{};
+    if (info.Length() > 1 && info[1].IsObject()) {
+      Napi::Object options = info[1].As<Napi::Object>();
+      if (options.Has("displayId") && options.Get("displayId").IsString()) {
+        displayId = @(options.Get("displayId").As<Napi::String>().Utf8Value().c_str());
+      }
+      if (options.Has("mask") && options.Get("mask").IsString()) {
+        std::string maskValue = options.Get("mask").As<Napi::String>().Utf8Value();
+        if (maskValue == "alpha") {
+          mask = coresim::VideoMaskPolicy::kAlpha;
+        } else if (maskValue == "black") {
+          mask = coresim::VideoMaskPolicy::kBlack;
+        }
+      }
+      if (options.Has("codec") && options.Get("codec").IsString()) {
+        std::string codecValue = options.Get("codec").As<Napi::String>().Utf8Value();
+        AVVideoCodecType codecType = codecValue == "hevc" ? AVVideoCodecTypeHEVC : AVVideoCodecTypeH264;
+        assetWriterOutputSettings = @{AVVideoCodecKey : codecType};
+      }
+    }
+    return RunAsyncVoid(env, [device, displayId, mask, assetWriterOutputSettings, outputFile]() {
+      dispatch_semaphore_t sema = dispatch_semaphore_create(0);
+      dispatch_queue_t queue = dispatch_queue_create("com.appium.coresim.recordVideo", DISPATCH_QUEUE_SERIAL);
+      __block NSError* capturedError = nil;
+      NSError* resolveError = nil;
+      BOOL ok = coresim::StartVideoRecording(
+          device, displayId, mask, assetWriterOutputSettings, outputFile, queue,
+          ^(NSError* asyncError) {
+            capturedError = asyncError;
+            dispatch_semaphore_signal(sema);
+          },
+          &resolveError);
+      ThrowIfFailed(ok, resolveError);
+      dispatch_semaphore_wait(sema, DISPATCH_TIME_FOREVER);
+      if (capturedError != nil) {
+        throw NSErrorException(capturedError);
+      }
+    });
+  }
+
+  // Stops a recording started by StartVideoRecording above. Resolves once the video file has been
+  // finalized on disk and is safe to read.
+  Napi::Value StopVideoRecording(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    id device = device_;
+    return RunAsyncVoid(env, [device]() {
+      dispatch_semaphore_t sema = dispatch_semaphore_create(0);
+      dispatch_queue_t queue = dispatch_queue_create("com.appium.coresim.stopRecordVideo", DISPATCH_QUEUE_SERIAL);
+      __block NSError* capturedError = nil;
+      NSError* resolveError = nil;
+      BOOL ok = coresim::StopVideoRecording(
+          device, queue,
+          ^(NSError* asyncError) {
+            capturedError = asyncError;
+            dispatch_semaphore_signal(sema);
+          },
+          &resolveError);
+      ThrowIfFailed(ok, resolveError);
+      dispatch_semaphore_wait(sema, DISPATCH_TIME_FOREVER);
+      if (capturedError != nil) {
+        throw NSErrorException(capturedError);
+      }
+    });
+  }
+
   // Option dictionary keys for `spawnWithPath:options:...` aren't part of the ObjC runtime
   // metadata this addon resolves selectors from (they're string literals inside CoreSimulator's
   // own implementation) — confirmed by resolving each `SimDeviceSpawnKey*` symbol at runtime via
@@ -912,6 +994,8 @@ void NativeDevice::Init(Napi::Env env) {
                       InstanceMethod<&NativeDevice::GetWebInspectorSocket>("getWebInspectorSocket"),
                       InstanceMethod<&NativeDevice::Screenshot>("screenshot"),
                       InstanceMethod<&NativeDevice::GetDisplays>("getDisplays"),
+                      InstanceMethod<&NativeDevice::StartVideoRecording>("startVideoRecording"),
+                      InstanceMethod<&NativeDevice::StopVideoRecording>("stopVideoRecording"),
                       InstanceMethod<&NativeDevice::Spawn>("spawn"),
                   });
   env.GetInstanceData<AddonInstanceData>()->deviceConstructor = Napi::Persistent(ctor);

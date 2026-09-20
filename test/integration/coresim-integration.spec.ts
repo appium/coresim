@@ -482,6 +482,93 @@ describe('NativeSimctl integration', () => {
         await assert.rejects(sim.getScreenshot(device!.udid, {format: 'jpeg', quality: 101}), RangeError);
       });
 
+      it('records a video of the booted device, enforcing one recording at a time', async (t) => {
+        const outputFile = path.join(os.tmpdir(), `coresim-video-test-${Date.now()}-${process.pid}.mp4`);
+        try {
+          await sim.startVideoRecording(device!.udid, outputFile);
+        } catch (err) {
+          if (err instanceof NativeSimUnavailableError) {
+            return t.skip(`video recording unavailable on this CoreSimulator: ${err.message}`);
+          }
+          throw err;
+        }
+        try {
+          // A second concurrent recording for the same device must reject rather than silently
+          // replacing the first one (see commands/video-recording.ts).
+          await assert.rejects(sim.startVideoRecording(device!.udid, outputFile), /already in progress/);
+        } finally {
+          await sim.stopVideoRecording(device!.udid);
+        }
+
+        const stats = await fs.promises.stat(outputFile);
+        assert.ok(stats.size > 0, 'expected a non-empty recorded video file');
+
+        // Nothing left running — a second stop must reject, not silently succeed.
+        await assert.rejects(sim.stopVideoRecording(device!.udid), /No video recording is in progress/);
+
+        if (await hasFfmpeg()) {
+          const codec = execFileSync('ffprobe', [
+            '-v',
+            'error',
+            '-select_streams',
+            'v:0',
+            '-show_entries',
+            'stream=codec_name',
+            '-of',
+            'default=noprint_wrappers=1:nokey=1',
+            outputFile,
+          ])
+            .toString()
+            .trim();
+          // CoreSimulator's own default (see sim_video_recording.h) — distinct from simctl's own
+          // CLI-level default of hevc, which is simctl always passing the codec key explicitly.
+          assert.strictEqual(codec, 'h264');
+        }
+
+        await fs.promises.rm(outputFile, {force: true});
+      });
+
+      it('records a video with an explicit codec, mask, and displayId', async (t) => {
+        if (!(await hasFfmpeg())) {
+          return t.skip('ffmpeg/ffprobe not installed');
+        }
+        const displays = await sim.getDisplays(device!.udid);
+        const targetDisplay = displays.find((d) => d.isMain) ?? displays[0];
+        assert.ok(targetDisplay, 'expected at least one renderable display');
+
+        const outputFile = path.join(os.tmpdir(), `coresim-video-test-hevc-${Date.now()}-${process.pid}.mp4`);
+        try {
+          await sim.startVideoRecording(device!.udid, outputFile, {
+            codec: 'hevc',
+            mask: 'black',
+            displayId: targetDisplay.id,
+          });
+        } catch (err) {
+          if (err instanceof NativeSimUnavailableError) {
+            return t.skip(`video recording unavailable on this CoreSimulator: ${err.message}`);
+          }
+          throw err;
+        }
+        await sim.stopVideoRecording(device!.udid);
+
+        const codec = execFileSync('ffprobe', [
+          '-v',
+          'error',
+          '-select_streams',
+          'v:0',
+          '-show_entries',
+          'stream=codec_name',
+          '-of',
+          'default=noprint_wrappers=1:nokey=1',
+          outputFile,
+        ])
+          .toString()
+          .trim();
+        assert.strictEqual(codec, 'hevc');
+
+        await fs.promises.rm(outputFile, {force: true});
+      });
+
       if (isIOSRuntime(fixture.runtimeIdentifier)) {
         it('opens a URL', async () => {
           // openURL can transiently ETIMEDOUT for a few seconds right after boot even once

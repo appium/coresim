@@ -144,6 +144,14 @@ NSString* const kJPEGUTI = @"public.jpeg";
 
 }  // namespace
 
+id ResolveCaptureDisplay(id device, NSString* displayId, NSError** error) {
+  NSArray<NSDictionary*>* candidates = RenderableDisplayCandidates(device, error);
+  if (candidates == nil) {
+    return nil;
+  }
+  return ResolveDisplayDescriptor(candidates, displayId, error);
+}
+
 NSArray<NSDictionary*>* ListDisplays(id device, NSError** error) {
   NSArray<NSDictionary*>* candidates = RenderableDisplayCandidates(device, error);
   if (candidates == nil) {
@@ -163,12 +171,7 @@ NSArray<NSDictionary*>* ListDisplays(id device, NSError** error) {
 
 NSData* CaptureScreenshot(id device, NSString* displayId, ScreenshotFormat format, NSNumber* jpegQualityPercent,
                           NSError** error) {
-  NSArray<NSDictionary*>* candidates = RenderableDisplayCandidates(device, error);
-  if (candidates == nil) {
-    return nil;
-  }
-
-  id descriptor = ResolveDisplayDescriptor(candidates, displayId, error);
+  id descriptor = ResolveCaptureDisplay(device, displayId, error);
   if (descriptor == nil) {
     return nil;
   }

@@ -49,6 +49,7 @@ import {
   setContentSize,
   setIncreaseContrast,
 } from './commands/ui.js';
+import {isVideoRecording, startVideoRecording, stopVideoRecording} from './commands/video-recording.js';
 import {getWebInspectorSocket} from './commands/webinspector.js';
 // Bare re-imports so `declare module './native-simctl.js'` augmentations in the command modules
 // (which add their methods to NativeSimctl's type) reach downstream consumers' emitted .d.ts
@@ -68,6 +69,7 @@ import './commands/process.js';
 import './commands/screenshot.js';
 import './commands/spawn.js';
 import './commands/ui.js';
+import './commands/video-recording.js';
 import './commands/webinspector.js';
 import {NativeSimUnavailableError} from './errors.js';
 import type {
@@ -246,6 +248,11 @@ Object.assign(NativeSimctl.prototype, {
   // screenshot
   getScreenshot,
   getDisplays,
+
+  // video recording
+  startVideoRecording,
+  stopVideoRecording,
+  isVideoRecording,
 
   // webinspector
   getWebInspectorSocket,
