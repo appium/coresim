@@ -4,8 +4,8 @@ import {describe, it} from 'node:test';
 import {VideoStream} from '../../src/index.js';
 import type {VideoAccessUnit} from '../../src/index.js';
 
-function fakeUnit(sequence: number): VideoAccessUnit {
-  return {data: Buffer.from([sequence]), isKeyFrame: sequence === 0, sequence, timestampMicros: sequence * 1000};
+function fakeUnit(sequence: number, isKeyFrame = sequence === 0): VideoAccessUnit {
+  return {data: Buffer.from([sequence]), isKeyFrame, sequence, timestampMicros: sequence * 1000};
 }
 
 /**
@@ -28,29 +28,41 @@ describe('VideoStream', () => {
     await stream.stop();
   });
 
-  it('bounds its buffer, dropping the oldest units once the limit is exceeded', async () => {
+  it('resyncs after overflow, discarding interframes until the next keyframe', async () => {
     const stream = new VideoStream('h264');
-    // One more than the queue's internal bound so the very oldest (sequence 0) must be dropped.
-    for (let i = 0; i < 61; i++) {
+    let keyFrameRequests = 0;
+    // Only the one method the queue's overflow path actually calls is exercised here.
+    stream._attachHandle({stop: async () => {}, requestKeyFrame: () => keyFrameRequests++});
+    // One keyframe plus enough interframes to force an overflow — an interframe is only
+    // decodable given every frame it references, so none of these (nor the keyframe itself,
+    // since the whole backlog is cleared on overflow) should ever reach the consumer.
+    for (let i = 0; i <= 60; i++) {
       stream._handleAccessUnit(fakeUnit(i));
     }
+    assert.strictEqual(keyFrameRequests, 1, 'overflow should have requested a fresh keyframe to resync from');
+    // A later interframe is still discarded — only a keyframe ends the resync.
+    stream._handleAccessUnit(fakeUnit(70, false));
+    stream._handleAccessUnit(fakeUnit(100, true));
+    stream._handleAccessUnit(fakeUnit(101, false));
+
     const received: number[] = [];
     for await (const unit of stream.accessUnits()) {
       received.push(unit.sequence);
-      if (received.length === 60) {
+      if (received.length === 2) {
         break;
       }
     }
-    assert.strictEqual(received.length, 60);
-    assert.strictEqual(received[0], 1, 'the oldest unit (sequence 0) should have been dropped');
-    assert.strictEqual(received[59], 60);
+    assert.deepStrictEqual(received, [100, 101]);
     await stream.stop();
   });
 
-  it('returns cleanly from accessUnits() given an already-aborted signal', async () => {
+  it('returns cleanly from accessUnits() given an already-aborted signal, without yielding units pushed before it', async () => {
     const stream = new VideoStream('h264');
     const controller = new AbortController();
     controller.abort();
+    // Pushed before iterating even starts — an already-aborted signal must win over dequeuing
+    // whatever's already buffered, not just future pushes.
+    stream._handleAccessUnit(fakeUnit(0));
     const received: VideoAccessUnit[] = [];
     for await (const unit of stream.accessUnits(controller.signal)) {
       received.push(unit);
@@ -59,14 +71,28 @@ describe('VideoStream', () => {
     await stream.stop();
   });
 
-  it('returns cleanly from accessUnits() called after stop()', async () => {
+  it('returns cleanly from accessUnits() called after stop(), without yielding units retained from before it', async () => {
     const stream = new VideoStream('h264');
+    stream._handleAccessUnit(fakeUnit(0));
     await stream.stop();
     const received: VideoAccessUnit[] = [];
     for await (const unit of stream.accessUnits()) {
       received.push(unit);
     }
     assert.strictEqual(received.length, 0);
+  });
+
+  it('rejects a second concurrent accessUnits() consumer', async () => {
+    const stream = new VideoStream('h264');
+    const firstIterator = stream.accessUnits();
+    const firstNext = firstIterator.next();  // starts executing synchronously up to its first await
+    await assert.rejects(async () => {
+      for await (const _unit of stream.accessUnits()) {
+        // no-op — expected to reject before ever reaching a unit
+      }
+    }, /only one active consumer/);
+    await stream.stop();
+    await firstNext;
   });
 
   it('resolves both callers of a concurrent stop()', async () => {

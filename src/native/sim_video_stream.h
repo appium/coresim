@@ -48,6 +48,11 @@ class VideoStreamSession {
   // onError/onEnd — same queue this blocks on, so it would deadlock.
   void Stop();
 
+  // Forces the next encoded frame to be a keyframe (self-decodable, parameter sets included) —
+  // e.g. so a consumer that just resynced after dropping frames can resume cleanly instead of
+  // waiting for the next periodic one. Safe from any thread; just sets a flag.
+  void RequestKeyFrame();
+
  private:
   class Impl;
   std::unique_ptr<Impl> impl_;

@@ -156,7 +156,7 @@ export interface VideoStreamOptions {
   codec?: 'h264' | 'hevc';
   /**
    * Max frames/sec to poll the framebuffer at — an unchanged frame is never re-encoded, so this
-   * is an upper bound, not a guarantee. Defaults to 15.
+   * is an upper bound, not a guarantee. Must be >= 1. Defaults to 15.
    */
   fps?: number;
   /** Target average bitrate, in bits/sec. Defaults to 2,000,000 (2 Mbps). */
@@ -292,6 +292,8 @@ export type NativeVideoErrorCallback = (err: Error) => void;
 /** A live encoder session, wrapped by `coresim.mm`'s `NativeVideoStream` — what `NativeDeviceHandle.startVideoStream()` resolves to. */
 export interface NativeVideoStreamHandle {
   stop(): Promise<void>;
+  /** Forces the next encoded frame to be a keyframe — trivial in-memory flag, so synchronous. */
+  requestKeyFrame(): void;
 }
 
 /** A `SimDevice`, wrapped by `coresim.mm`'s `NativeDevice` — what `NativeSimctl`'s `_findDevice()` resolves to. */

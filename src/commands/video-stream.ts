@@ -22,6 +22,9 @@ const log = logger.getLogger('CoreSim');
 // otherwise grow without limit while a slow consumer falls behind.
 const MAX_BUFFERED_UNITS = 60;
 
+const SINGLE_CONSUMER_ERROR =
+  'VideoStream.accessUnits() supports only one active consumer at a time — a second concurrent call rejects.';
+
 /** `wrapNativeError` always throws — this just gets its thrown value back as a plain return, to emit rather than raise it. */
 function toTypedError(err: unknown): Error {
   try {
@@ -35,8 +38,15 @@ function toTypedError(err: unknown): Error {
  * Single-consumer FIFO between native's per-frame callback and `accessUnits()`. Unlike routing
  * through `EventEmitter`, a unit pushed before any consumer has started iterating is retained
  * (fixing the encoder's own first-frame/keyframe otherwise being lost to a startup race) rather
- * than silently dropped, while still bounding memory once `MAX_BUFFERED_UNITS` is exceeded by
- * dropping the oldest buffered unit — a live stream favors staying current over a full backlog.
+ * than silently dropped.
+ *
+ * Bounded at `MAX_BUFFERED_UNITS`, but codec-aware about *how* it sheds load once a slow consumer
+ * falls behind: since frames only reference earlier frames they were encoded against (no
+ * `AllowFrameReordering`), dropping an arbitrary interframe would orphan every later one from its
+ * reference chain, corrupting decode from that point on even though delivery looks unbroken.
+ * Overflow instead clears the backlog entirely and enters a resync state, discarding every
+ * further interframe (not buffering them) until the next keyframe — self-decodable on its own —
+ * lets delivery resume cleanly.
  */
 class AccessUnitQueue {
   private readonly buffer: VideoAccessUnit[] = [];
@@ -45,10 +55,20 @@ class AccessUnitQueue {
     | undefined;
   private ended = false;
   private error: unknown;
+  private resyncing = false;
+
+  /** @param onOverflow — called once when overflow first forces a resync, e.g. to request a fresh keyframe. */
+  constructor(private readonly onOverflow?: () => void) {}
 
   push(unit: VideoAccessUnit): void {
     if (this.ended) {
       return;
+    }
+    if (this.resyncing) {
+      if (!unit.isKeyFrame) {
+        return;  // still waiting for a self-decodable point to resume delivery from
+      }
+      this.resyncing = false;
     }
     if (this.waiter) {
       const {resolve} = this.waiter;
@@ -58,7 +78,9 @@ class AccessUnitQueue {
     }
     this.buffer.push(unit);
     if (this.buffer.length > MAX_BUFFERED_UNITS) {
-      this.buffer.shift();
+      this.buffer.length = 0;
+      this.resyncing = true;
+      this.onOverflow?.();
     }
   }
 
@@ -83,6 +105,7 @@ class AccessUnitQueue {
       return;
     }
     this.ended = true;
+    this.buffer.length = 0;
     if (this.waiter) {
       const {resolve} = this.waiter;
       this.waiter = undefined;
@@ -90,17 +113,22 @@ class AccessUnitQueue {
     }
   }
 
-  /** Resolves `done` (not rejects) if `signal` aborts while waiting, mirroring `events.on()`. */
+  /**
+   * Resolves `done` (not rejects) if `signal` aborts while waiting, mirroring `events.on()`.
+   * Checks cancellation/end *before* dequeuing, so an already-aborted signal or an already-ended
+   * queue never hands out a stale buffered unit — an aborted consumer, or a fresh iterator started
+   * after `stop()`, must see the boundary immediately rather than draining leftovers first.
+   */
   next(signal: AbortSignal): Promise<IteratorResult<VideoAccessUnit>> {
-    const buffered = this.buffer.shift();
-    if (buffered !== undefined) {
-      return Promise.resolve({value: buffered, done: false});
+    if (signal.aborted) {
+      return Promise.resolve({value: undefined, done: true});
     }
     if (this.ended) {
       return this.error ? Promise.reject(this.error) : Promise.resolve({value: undefined, done: true});
     }
-    if (signal.aborted) {
-      return Promise.resolve({value: undefined, done: true});
+    const buffered = this.buffer.shift();
+    if (buffered !== undefined) {
+      return Promise.resolve({value: buffered, done: false});
     }
     return new Promise((resolve, reject) => {
       const onAbort = () => {
@@ -132,7 +160,10 @@ export class VideoStream extends EventEmitter {
   private handle: NativeVideoStreamHandle | undefined;
   private readonly stopController = new AbortController();
   private stopPromise: Promise<void> | undefined;
-  private readonly queue = new AccessUnitQueue();
+  // Requests a fresh keyframe on resync so delivery can resume immediately rather than waiting
+  // for the next periodic one — `handle` may not be attached yet on a startup-time overflow
+  // (vanishingly unlikely given MAX_BUFFERED_UNITS), in which case this is just a no-op.
+  private readonly queue = new AccessUnitQueue(() => this.handle?.requestKeyFrame());
   private activeConsumers = 0;
 
   /** @internal */
@@ -170,8 +201,14 @@ export class VideoStream extends EventEmitter {
    * Yields each encoded access unit as it's produced, until {@link stop} is called or the stream
    * errors (in which case the error is thrown out of the loop). Pass `signal` to stop iterating
    * without treating that as an error. Mirrors `ScreenStreamCapture.accessUnits()`'s shape.
+   *
+   * Only one active consumer is supported at a time — a second concurrent call rejects rather
+   * than silently sharing (and corrupting) the first one's single internal waiter slot.
    */
   async *accessUnits(signal?: AbortSignal): AsyncGenerator<VideoAccessUnit> {
+    if (this.activeConsumers > 0) {
+      throw new Error(SINGLE_CONSUMER_ERROR);
+    }
     const combined = signal ? AbortSignal.any([signal, this.stopController.signal]) : this.stopController.signal;
     this.activeConsumers++;
     try {
@@ -212,8 +249,10 @@ export async function startVideoStream(
   udid: string,
   options: VideoStreamOptions = {},
 ): Promise<VideoStream> {
-  if (options.fps !== undefined && (!Number.isFinite(options.fps) || options.fps <= 0)) {
-    throw new RangeError(`fps must be a positive finite number, got ${options.fps}`);
+  // The native poller clamps below 1 fps to 1 fps rather than actually polling that slowly, so a
+  // sub-1 value here would silently poll far more often than requested — rejected instead.
+  if (options.fps !== undefined && (!Number.isFinite(options.fps) || options.fps < 1)) {
+    throw new RangeError(`fps must be a finite number >= 1, got ${options.fps}`);
   }
   if (
     options.bitrate !== undefined &&
