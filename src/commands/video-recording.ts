@@ -13,8 +13,10 @@ declare module '../native-simctl.js' {
 }
 
 // Tracks which devices currently have an active recording — module-level since the constraint
-// (at most one per device) is CoreSimulator's own, not per-NativeSimctl-instance.
-const activeRecordings = new Set<string>();
+// (at most one per device) is CoreSimulator's own, not per-NativeSimctl-instance. The value is the
+// in-flight (or already-settled) startVideoRecording call, so a concurrent stopVideoRecording can
+// always wait for start to fully resolve before racing it natively (see below).
+const activeRecordings = new Map<string, Promise<void>>();
 
 /**
  * Starts recording the device's display to `outputFile` — the native equivalent of `simctl io
@@ -41,34 +43,51 @@ export async function startVideoRecording(
     throw new Error(`A video recording is already in progress for device '${udid}'`);
   }
   const absoluteOutputFile = path.resolve(outputFile);
-  // Marked before the native call, not after it resolves, so a concurrent startVideoRecording for
-  // the same device is rejected immediately instead of racing this one — rolled back below on
-  // failure.
-  activeRecordings.add(key);
+  const startPromise = runCatchingAsync(async () =>
+    (await this._findDevice(udid)).startVideoRecording(absoluteOutputFile, options),
+  );
+  // Marked before the native call resolves, not after, so a concurrent startVideoRecording for the
+  // same device is rejected immediately instead of racing this one — rolled back below on failure.
+  activeRecordings.set(key, startPromise);
   try {
-    await runCatchingAsync(async () => (await this._findDevice(udid)).startVideoRecording(absoluteOutputFile, options));
+    await startPromise;
   } catch (e) {
-    activeRecordings.delete(key);
+    // Only clear our own entry — a concurrent stopVideoRecording (see below) may already have.
+    if (activeRecordings.get(key) === startPromise) {
+      activeRecordings.delete(key);
+    }
     throw e;
   }
 }
 
 /**
  * Stops a recording previously started by {@link startVideoRecording} on the same device.
- * Resolves once the video file has been finalized on disk and is safe to read.
+ * Resolves once the video file has been finalized on disk and is safe to read. If `start` is still
+ * in flight (e.g. a concurrent caller stopping as soon as {@link isVideoRecording} turns `true`),
+ * waits for it to settle first — issuing the native stop call any earlier is a silent CoreSimulator
+ * race (see CLAUDE.md).
  *
  * @param udid — UDID of the device to stop recording
  * @throws {Error} if no recording is currently in progress for this device
  */
 export async function stopVideoRecording(this: NativeSimctl, udid: string): Promise<void> {
   const key = udid.toLowerCase();
-  if (!activeRecordings.has(key)) {
+  const pendingStart = activeRecordings.get(key);
+  if (!pendingStart) {
+    throw new Error(`No video recording is in progress for device '${udid}'`);
+  }
+  try {
+    await pendingStart;
+  } catch {
+    // start itself failed — its own catch already cleaned up activeRecordings; nothing to stop.
     throw new Error(`No video recording is in progress for device '${udid}'`);
   }
   try {
     await runCatchingAsync(async () => (await this._findDevice(udid)).stopVideoRecording());
   } finally {
-    activeRecordings.delete(key);
+    if (activeRecordings.get(key) === pendingStart) {
+      activeRecordings.delete(key);
+    }
   }
 }
 

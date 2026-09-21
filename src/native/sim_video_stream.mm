@@ -111,19 +111,24 @@ class VideoStreamSession::Impl {
     // time from this.
     startTime_ = CFAbsoluteTimeGetCurrent();
     // Encode immediately rather than waiting for a *changed* seed on the first tick, or the
-    // stream would stay silent until the display changes again. running_ is still false here, so
-    // a failure tears session_ down itself instead of going through Stop()/onEnd_ (see
-    // coresim.mm — onEnd_ firing this early would double-release its ThreadSafeFunctions).
+    // stream would stay silent until the display changes again. running_ is set true before this
+    // call (not after), since VTCompressionSessionEncodeFrame's output callback can in principle
+    // fire on another thread before this one returns — HandleEncodedSample discards samples while
+    // running_ is false, which would otherwise silently drop the stream's very first (keyframe)
+    // access unit. A failure resets it and tears session_ down itself here, rather than going
+    // through Stop()/onEnd_ (see coresim.mm — onEnd_ firing this early would double-release its
+    // ThreadSafeFunctions).
+    running_ = true;
     try {
       EncodeSurface(surface);
     } catch (...) {
+      running_ = false;
       VTCompressionSessionInvalidate(session_);
       CFRelease(session_);
       session_ = nullptr;
       throw;
     }
     lastSeed_ = IOSurfaceGetSeed(surface);
-    running_ = true;
 
     double interval = 1.0 / std::max(options_.fps, 1.0);
     dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, queue_);
