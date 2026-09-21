@@ -85,7 +85,7 @@ describe('VideoStream', () => {
   it('rejects a second concurrent accessUnits() consumer', async () => {
     const stream = new VideoStream('h264');
     const firstIterator = stream.accessUnits();
-    const firstNext = firstIterator.next();  // starts executing synchronously up to its first await
+    const firstNext = firstIterator.next(); // starts executing synchronously up to its first await
     await assert.rejects(async () => {
       for await (const _unit of stream.accessUnits()) {
         // no-op — expected to reject before ever reaching a unit

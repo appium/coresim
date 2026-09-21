@@ -66,7 +66,7 @@ class AccessUnitQueue {
     }
     if (this.resyncing) {
       if (!unit.isKeyFrame) {
-        return;  // still waiting for a self-decodable point to resume delivery from
+        return; // still waiting for a self-decodable point to resume delivery from
       }
       this.resyncing = false;
     }
