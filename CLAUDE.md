@@ -171,7 +171,10 @@ toolchain (`make` and `xcodebuild`).
   detect this either: opening it needs Full Disk Access, an equally ungrantable permission. CI seeds
   the grant directly since GitHub-hosted runners ship with SIP disabled (`scripts/ci/grant-audio-
   capture.sh`, `integration-test.yml`'s `grant-audio-capture` input) — the integration tests still
-  only assert the audio track/units are structurally valid, never audible.
+  only assert the audio track/units are structurally valid, never audible. **A host with no default
+  audio output device at all** (some headless CI runners) lets tap/aggregate-device creation
+  succeed but then makes `AudioDeviceStart` block for ~180s before failing — `sim_audio_tap.mm`
+  checks for a default output device up front and fails in milliseconds instead.
 - **`getAppContainer` is a pure TS convenience wrapper over `appInfo`'s existing `Path`/
   `DataContainer`/`GroupContainers` fields** (see `commands/app.ts`) — no new native call, since
   `propertiesOfApplication:` already reports every container path `simctl get_app_container` does.

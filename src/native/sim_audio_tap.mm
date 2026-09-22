@@ -103,6 +103,22 @@ class AudioTapSession::Impl {
  private:
   API_AVAILABLE(macos(14.2))
   void StartTap() {
+    // On a host with no default audio output device at all (observed on some headless CI
+    // runners), AudioDeviceStart below can still succeed in creating the aggregate device but
+    // then block for ~180s before failing — it apparently needs a real device to anchor the
+    // aggregate's clock domain, even for a private tap with no actual playback. Checked here
+    // first so that case fails in milliseconds instead of minutes.
+    AudioObjectID defaultOutput = kAudioObjectUnknown;
+    UInt32 defaultOutputSize = sizeof(defaultOutput);
+    AudioObjectPropertyAddress defaultOutputAddress = {
+        kAudioHardwarePropertyDefaultOutputDevice, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain};
+    OSStatus defaultOutputStatus = AudioObjectGetPropertyData(kAudioObjectSystemObject, &defaultOutputAddress, 0,
+                                                              nullptr, &defaultOutputSize, &defaultOutput);
+    if (defaultOutputStatus != noErr || defaultOutput == kAudioObjectUnknown) {
+      throw NSErrorException(
+          MakeError(11, @"This host has no default audio output device — Core Audio process taps need one"));
+    }
+
     lastProcessSet_ = ResolveProcessObjects(udid_);
     if (lastProcessSet_.empty()) {
       throw NSErrorException(MakeError(
