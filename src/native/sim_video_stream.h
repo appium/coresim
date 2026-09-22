@@ -7,9 +7,9 @@
 #include <memory>
 #include <vector>
 
-namespace coresim {
+#include "video_encoder.h"
 
-enum class VideoStreamCodec { kH264, kHEVC };
+namespace coresim {
 
 // One encoded frame — Annex-B NAL units, concatenated. A keyframe's `data` has parameter sets
 // (SPS/PPS, or VPS/SPS/PPS for HEVC) prepended, so every keyframe is self-decodable alone.
@@ -21,19 +21,12 @@ struct VideoAccessUnit {
   int64_t timestampMicros = 0;
 };
 
-struct VideoStreamOptions {
-  VideoStreamCodec codec = VideoStreamCodec::kH264;
-  NSString* displayId = nil;
-  double fps = 15.0;
-  int bitrate = 2000000;
-};
-
 // Polls the live display IOSurface (sim_screenshot.h) on a serial queue and encodes changed
 // frames via the public VideoToolbox API — unlike StartVideoRecording's private, file-only
 // recorder, this delivers access units live. Full thread-safety contract: see CLAUDE.md.
 class VideoStreamSession {
  public:
-  VideoStreamSession(id device, VideoStreamOptions options, std::function<void(VideoAccessUnit)> onAccessUnit,
+  VideoStreamSession(id device, VideoEncoderOptions options, std::function<void(VideoAccessUnit)> onAccessUnit,
                      std::function<void(NSError*)> onError, std::function<void()> onEnd);
   ~VideoStreamSession();
 

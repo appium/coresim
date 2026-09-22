@@ -13,8 +13,13 @@
         "src/native/tcc_privacy.mm",
         "src/native/sim_pasteboard.mm",
         "src/native/sim_process.mm",
+        "src/native/sim_audio_tap.mm",
+        "src/native/audio_encoder.mm",
+        "src/native/av_recording.mm",
+        "src/native/av_stream.mm",
         "src/native/sim_screenshot.mm",
         "src/native/sim_video_recording.mm",
+        "src/native/video_encoder.mm",
         "src/native/sim_video_stream.mm"
       ],
       "include_dirs": [
@@ -44,7 +49,9 @@
         "OTHER_LDFLAGS": [
           "-framework", "Foundation",
           "-framework", "AppKit",
+          "-framework", "AudioToolbox",
           "-framework", "AVFoundation",
+          "-framework", "CoreAudio",
           "-framework", "CoreImage",
           "-framework", "CoreMedia",
           "-framework", "CoreVideo",

@@ -6,6 +6,7 @@
 #include <sys/un.h>
 
 #include <cstring>
+#include <string>
 #include <vector>
 
 namespace coresim {
@@ -25,48 +26,96 @@ NSString* ExecutablePath(pid_t pid) {
   return size > 0 ? [NSString stringWithUTF8String:pathBuf] : nil;
 }
 
-// argv[1] via the unprivileged KERN_PROCARGS2 sysctl (same as `ps`/`lsof`) — for `launchd_sim`
-// that's its bootstrap plist path, which embeds the device's UDID.
-NSString* FirstArgument(pid_t pid) {
+// Layout: argc, exec path, NUL padding, then argv[0..argc-1], then envp[...], each NUL-terminated
+// (envp has no guaranteed empty-string sentinel within the buffer — just runs to `size`).
+std::vector<char> ProcArgs2(pid_t pid) {
   int mib[3] = {CTL_KERN, KERN_PROCARGS2, pid};
   size_t size = 0;
   if (sysctl(mib, 3, nullptr, &size, nullptr, 0) != 0 || size < sizeof(int)) {
-    return nil;
+    return {};
   }
   std::vector<char> buffer(size);
   if (sysctl(mib, 3, buffer.data(), &size, nullptr, 0) != 0) {
-    return nil;
+    return {};
   }
-  // Layout: argc, exec path, NUL padding, then argv[0], argv[1], ..., each NUL-terminated.
-  int argc = 0;
-  std::memcpy(&argc, buffer.data(), sizeof(argc));
-  const char* cursor = buffer.data() + sizeof(argc);
-  const char* end = buffer.data() + size;
+  return buffer;
+}
+
+const char* SkipExecPathAndPadding(const char* cursor, const char* end) {
   cursor += strnlen(cursor, static_cast<size_t>(end - cursor));  // skip the exec path
   while (cursor < end && *cursor == '\0') cursor++;              // skip the NUL padding
-  cursor += strnlen(cursor, static_cast<size_t>(end - cursor));  // skip argv[0]
-  if (cursor < end) cursor++;                                    // skip its NUL terminator
+  return cursor;
+}
+
+// Advances past `count` further NUL-terminated entries (e.g. argv), landing just after the last
+// one's terminator — or at `end` if there weren't that many.
+const char* SkipEntries(const char* cursor, const char* end, int count) {
+  for (int i = 0; i < count && cursor < end; i++) {
+    cursor += strnlen(cursor, static_cast<size_t>(end - cursor));
+    if (cursor < end) cursor++;
+  }
+  return cursor;
+}
+
+// argv[1] via the unprivileged KERN_PROCARGS2 sysctl (same as `ps`/`lsof`) — for `launchd_sim`
+// that's its bootstrap plist path, which embeds the device's UDID.
+NSString* FirstArgument(pid_t pid) {
+  std::vector<char> buffer = ProcArgs2(pid);
+  if (buffer.empty()) {
+    return nil;
+  }
+  int argc = 0;
+  std::memcpy(&argc, buffer.data(), sizeof(argc));
+  const char* end = buffer.data() + buffer.size();
+  const char* cursor = SkipEntries(SkipExecPathAndPadding(buffer.data() + sizeof(argc), end), end, 1);
   if (argc < 2 || cursor >= end) {
     return nil;
   }
   return [NSString stringWithUTF8String:cursor];
 }
 
-// Each booted simulator has its own `launchd_sim`; finds the one owning `udid`.
-pid_t FindLaunchdSimPid(NSString* udid) {
+// The value of `key=...` in `pid`'s environment, past the end of its argv — same sysctl as
+// FirstArgument, walked further.
+NSString* FindEnvValue(pid_t pid, NSString* key) {
+  std::vector<char> buffer = ProcArgs2(pid);
+  if (buffer.empty()) {
+    return nil;
+  }
+  int argc = 0;
+  std::memcpy(&argc, buffer.data(), sizeof(argc));
+  const char* end = buffer.data() + buffer.size();
+  const char* cursor = SkipEntries(SkipExecPathAndPadding(buffer.data() + sizeof(argc), end), end, argc);
+  std::string prefix = std::string(key.UTF8String) + "=";
+  while (cursor < end && *cursor != '\0') {
+    size_t entryLen = strnlen(cursor, static_cast<size_t>(end - cursor));
+    if (entryLen > prefix.size() && std::memcmp(cursor, prefix.data(), prefix.size()) == 0) {
+      return [NSString stringWithUTF8String:cursor + prefix.size()];
+    }
+    cursor += entryLen;
+    if (cursor < end) cursor++;
+  }
+  return nil;
+}
+
+// Every live pid on the system, via the unprivileged proc_listpids sysctl.
+std::vector<pid_t> AllPids() {
   int neededBytes = proc_listpids(PROC_ALL_PIDS, 0, nullptr, 0);
   if (neededBytes <= 0) {
-    return -1;
+    return {};
   }
   // Headroom for processes started between the sizing call above and the listing call below.
   std::vector<pid_t> pids(neededBytes / sizeof(pid_t) + 64);
   int bytes = proc_listpids(PROC_ALL_PIDS, 0, pids.data(), static_cast<int>(pids.size() * sizeof(pid_t)));
   if (bytes <= 0) {
-    return -1;
+    return {};
   }
-  int count = bytes / static_cast<int>(sizeof(pid_t));
-  for (int i = 0; i < count; i++) {
-    pid_t pid = pids[i];
+  pids.resize(static_cast<size_t>(bytes) / sizeof(pid_t));
+  return pids;
+}
+
+// Each booted simulator has its own `launchd_sim`; finds the one owning `udid`.
+pid_t FindLaunchdSimPid(NSString* udid) {
+  for (pid_t pid : AllPids()) {
     if (pid <= 0) {
       continue;
     }
@@ -134,6 +183,20 @@ NSString* FindWebInspectorSocket(NSString* udid, NSError** error) {
     *error = MakeError(2, [NSString stringWithFormat:@"No WebInspector socket was found for device '%@'", udid]);
   }
   return socketPath;
+}
+
+std::vector<pid_t> FindGuestProcessPids(NSString* udid) {
+  std::vector<pid_t> result;
+  for (pid_t pid : AllPids()) {
+    if (pid <= 0) {
+      continue;
+    }
+    NSString* value = FindEnvValue(pid, @"SIMULATOR_UDID");
+    if (value != nil && [value caseInsensitiveCompare:udid] == NSOrderedSame) {
+      result.push_back(pid);
+    }
+  }
+  return result;
 }
 
 }  // namespace coresim

@@ -1,8 +1,10 @@
 import path from 'node:path';
 
+import {logger} from '@appium/support';
+
 import type {NativeSimctl} from '../native-simctl.js';
-import type {VideoRecordingOptions} from '../types.js';
-import {runCatchingAsync} from '../utils/index.js';
+import type {NativeVideoRecordingHandle, VideoRecordingOptions} from '../types.js';
+import {runCatchingAsync, toTypedError} from '../utils/index.js';
 
 declare module '../native-simctl.js' {
   interface NativeSimctl {
@@ -12,13 +14,18 @@ declare module '../native-simctl.js' {
   }
 }
 
+const log = logger.getLogger('CoreSim');
+
 // One device's recording lifecycle: `start` is the in-flight (or already-settled)
-// startVideoRecording call, so a concurrent stopVideoRecording can always wait for it to fully
-// resolve before racing it natively. `stop`, once set, is the in-flight native stop call shared by
-// every concurrent stopVideoRecording for this same recording — see stopVideoRecording for why a
-// second one must reuse it rather than issuing its own.
+// startVideoRecording call, resolving to the live native handle — with `options.audio` unset,
+// this addresses CoreSimulator's own internally-tracked private recorder (no real local resource,
+// same as before this field existed); with it set, it's a real local resource (this addon's own
+// video+audio encoders) with no server-side counterpart, so a handle is the only way to stop it
+// either way. `stop`, once set, is the in-flight native stop call shared by every concurrent
+// stopVideoRecording for this same recording — see stopVideoRecording for why a second one must
+// reuse it rather than issuing its own.
 interface RecordingState {
-  readonly start: Promise<void>;
+  readonly start: Promise<NativeVideoRecordingHandle>;
   stop?: Promise<void>;
 }
 
@@ -27,17 +34,24 @@ interface RecordingState {
 const activeRecordings = new Map<string, RecordingState>();
 
 /**
- * Starts recording the device's display to `outputFile` — the native equivalent of `simctl io
- * <udid> recordVideo`. Resolves once the first frame has actually been recorded, so it's always
- * safe to call {@link stopVideoRecording} immediately after. Only one recording may be active per
- * device at a time; starting a second one while the first is still running rejects. Rejects with
- * `NativeSimUnavailableError` if this CoreSimulator predates the private capture API — confirmed
- * missing on Xcode 16.4's, present on Xcode 26.5+ (Apple documents no exact version floor).
+ * Starts recording the device's display (and, with `options.audio`, its audio too, muxed as a
+ * second track) to `outputFile` — the native equivalent of `simctl io <udid> recordVideo` when
+ * `audio` is unset. Resolves once the first frame has actually been recorded, so it's always safe
+ * to call {@link stopVideoRecording} immediately after. Only one recording may be active per
+ * device at a time; starting a second one while the first is still running rejects.
+ *
+ * Without `audio`, rejects with `NativeSimUnavailableError` if this CoreSimulator predates the
+ * private capture API — confirmed missing on Xcode 16.4's, present on Xcode 26.5+ (Apple documents
+ * no exact version floor). With `audio`, see {@link VideoRecordingOptions.audio}'s own doc comment
+ * for its host-permission requirement; a failure *after* this call has already resolved (e.g. the
+ * audio tap's guest process set vanishing mid-recording) doesn't reject it — it's logged here
+ * instead — call {@link stopVideoRecording} to observe it as a rejection and release the
+ * recording's resources.
  *
  * @param udid — UDID of the device to record; must be booted
  * @param outputFile — filesystem path to write the video to; resolved against `process.cwd()` if
  *   relative, since the native layer requires an absolute path
- * @param options — `displayId`, `codec`, `mask` — see {@link VideoRecordingOptions}
+ * @param options — `displayId`, `codec`, `mask`, `audio`, `fps`, `bitrate` — see {@link VideoRecordingOptions}
  * @throws {Error} if a recording is already in progress for this device
  */
 export async function startVideoRecording(
@@ -52,7 +66,11 @@ export async function startVideoRecording(
   }
   const absoluteOutputFile = path.resolve(outputFile);
   const startPromise = runCatchingAsync(async () =>
-    (await this._findDevice(udid)).startVideoRecording(absoluteOutputFile, options),
+    (await this._findDevice(udid)).startVideoRecording(absoluteOutputFile, options, (err) => {
+      // Only ever invoked on the `audio` path — see its own doc comment above. No live consumer
+      // to report to (this call already resolved), so logged instead of lost.
+      log.error(`Unhandled video recording error for device '${udid}': ${toTypedError(err).stack ?? err}`);
+    }),
   );
   // Marked before the native call resolves, not after, so a concurrent startVideoRecording for the
   // same device is rejected immediately instead of racing this one — rolled back below on failure.
@@ -92,15 +110,16 @@ export async function stopVideoRecording(this: NativeSimctl, udid: string): Prom
   if (!state) {
     throw new Error(`No video recording is in progress for device '${udid}'`);
   }
+  let handle: NativeVideoRecordingHandle;
   try {
-    await state.start;
+    handle = await state.start;
   } catch {
     // start itself failed — its own catch already cleaned up activeRecordings; nothing to stop.
     throw new Error(`No video recording is in progress for device '${udid}'`);
   }
-  const stopPromise = (state.stop ??= runCatchingAsync(async () =>
-    (await this._findDevice(udid)).stopVideoRecording(),
-  ));
+  const stopPromise = (state.stop ??= runCatchingAsync(async () => {
+    await handle.stop();
+  }));
   try {
     await stopPromise;
   } catch (e) {
