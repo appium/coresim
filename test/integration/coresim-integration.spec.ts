@@ -638,6 +638,9 @@ describe('NativeSimctl integration', () => {
       });
 
       it('records a video with audio, muxed as a second AAC track', async (t) => {
+        if (IS_CI) {
+          return t.skip('audio capture can block for ~180s (MACH_RCV_TIMED_OUT) on some CI runners — see CLAUDE.md');
+        }
         if (!(await hasFfmpeg())) {
           return t.skip('ffmpeg/ffprobe not installed');
         }
@@ -767,6 +770,9 @@ describe('NativeSimctl integration', () => {
       });
 
       it('streams video and audio interleaved via a Core Audio process tap', async (t) => {
+        if (IS_CI) {
+          return t.skip('audio capture can block for ~180s (MACH_RCV_TIMED_OUT) on some CI runners — see CLAUDE.md');
+        }
         let stream: Awaited<ReturnType<typeof sim.startVideoStream>>;
         try {
           stream = await retryUntilAudioProcessesFound(() =>

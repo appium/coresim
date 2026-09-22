@@ -171,10 +171,14 @@ toolchain (`make` and `xcodebuild`).
   detect this either: opening it needs Full Disk Access, an equally ungrantable permission. CI seeds
   the grant directly since GitHub-hosted runners ship with SIP disabled (`scripts/ci/grant-audio-
   capture.sh`, `integration-test.yml`'s `grant-audio-capture` input) — the integration tests still
-  only assert the audio track/units are structurally valid, never audible. **A host with no default
-  audio output device at all** (some headless CI runners) lets tap/aggregate-device creation
-  succeed but then makes `AudioDeviceStart` block for ~180s before failing — `sim_audio_tap.mm`
-  checks for a default output device up front and fails in milliseconds instead.
+  only assert the audio track/units are structurally valid, never audible. A host with no default
+  audio output device at all is checked for and rejected in milliseconds, but that's not the only
+  slow-host failure mode: on some CI runners (confirmed on the `26.5`/`27.0` matrix legs, not
+  `16.4`) `AudioDeviceStart` blocks for ~180s before failing with `MACH_RCV_TIMED_OUT` (a Mach IPC
+  timeout talking to `coreaudiod`) even though a default device exists — not predictable or
+  avoidable from our side, so the audio-capture integration tests currently skip outright in CI
+  (`IS_CI` in `coresim-integration.spec.ts`) rather than pay that cost on every run; they still run
+  normally locally.
 - **`getAppContainer` is a pure TS convenience wrapper over `appInfo`'s existing `Path`/
   `DataContainer`/`GroupContainers` fields** (see `commands/app.ts`) — no new native call, since
   `propertiesOfApplication:` already reports every container path `simctl get_app_container` does.
