@@ -146,25 +146,19 @@ export interface VideoRecordingOptions {
   mask?: 'ignored' | 'alpha' | 'black';
   /**
    * Also capture the device's audio into the same file, muxed as a second track. Defaults to
-   * `false`.
+   * `false`. Needs the host's "System Audio Recording Only" privacy permission (System Settings >
+   * Privacy & Security) — see CLAUDE.md for why this can't be granted programmatically, and why a
+   * denial isn't a thrown error (it surfaces as a silent, audio-less/near-silent recording).
    *
-   * Needs the host's "System Audio Recording Only" privacy permission (System Settings > Privacy
-   * & Security) — see CLAUDE.md for why this can't be granted programmatically the way guest
-   * permissions can, and why a denial can't be detected as a thrown error either (it surfaces only
-   * as a silent, audio-less/near-silent recording).
-   *
-   * Switches the underlying implementation, same as an explicit `fps` does (see its own doc
-   * comment) — setting either routes this through this addon's own VideoToolbox + Core Audio
-   * encoders instead of CoreSimulator's private recorder, which has no per-frame hook to mux audio
-   * into.
+   * Like an explicit `fps`, this switches the implementation to this addon's own VideoToolbox +
+   * Core Audio encoders instead of CoreSimulator's private recorder, which can't mux audio.
    */
   audio?: boolean;
   /**
    * Max frames/sec to poll the framebuffer at — see {@link VideoStreamOptions} `fps` for the
    * identical semantics. Meaningless against CoreSimulator's private recorder (it captures on its
-   * own internal cadence, not one we poll), so setting `fps` — even without `audio` — switches this
-   * recording to this addon's own VideoToolbox-based encoder instead (the same one `audio` switches
-   * to, just without the audio track when `audio` itself is unset). That switch costs `mask`
+   * own cadence, not one we poll), so setting `fps` — even without `audio` — switches this
+   * recording to the same own-encoder implementation `audio` does. That switch costs `mask`
    * support, which only the private recorder implements.
    */
   fps?: number;

@@ -1,21 +1,15 @@
 #!/usr/bin/env bash
 # Seeds a path-based kTCCServiceAudioCapture ("System Audio Recording Only") grant for the given
-# binary into the host's TCC databases, so this addon's Core Audio process-tap feature
-# (src/native/sim_audio_tap.mm — the `audio` option on startVideoRecording/startVideoStream)
-# actually captures real device audio in CI instead of the permission-denied silent-PCM path every
-# unprivileged local dev run exercises by default (see CLAUDE.md).
+# binary into the host's TCC databases, so CI exercises the real (not permission-denied) audio-
+# capture path (see CLAUDE.md, sim_audio_tap.mm).
 #
-# Only works on runners where System Integrity Protection is disabled (GitHub-hosted macOS images
-# have shipped this way since macos-13: actions/runner-images#8162) — SIP is what normally makes
-# TCC.db unwritable even as root. Mirrors appium-mac2-driver's scripts/ci/grant-accessibility.sh
-# (same schema/SIP caveat, same client_type=1 path-based/no-csreq rationale — see its own comment)
-# with one difference: this needs the grant on the actual Node.js binary running the test process
-# itself (the native addon runs in-process, not via a signed .app bundle like WebDriverAgentMac's
-# test runner).
+# Only works where SIP is disabled (GitHub-hosted macOS images have been since macos-13) — that's
+# what normally makes TCC.db unwritable even as root. Mirrors appium-mac2-driver's
+# scripts/ci/grant-accessibility.sh, except the grant targets the Node.js binary itself (the
+# addon runs in-process, not via a signed .app bundle).
 #
-# Which of the two TCC databases (system-wide vs. per-user) macOS actually consults for
-# kTCCServiceAudioCapture isn't documented, so both are seeded — harmless either way, tccd just
-# ignores an irrelevant row in the one it doesn't check.
+# Seeds both TCC databases (system-wide and per-user) since which one macOS actually consults for
+# this service isn't documented — harmless either way.
 set -euo pipefail
 
 if [[ $# -ne 1 ]]; then
@@ -30,11 +24,8 @@ if [[ ! -f "$target_path" ]]; then
   exit 0
 fi
 
-# Escaped for safe interpolation into the single-quoted SQL string literal below (doubling any
-# embedded single quote — SQL's own escaping convention). target_path comes from `command -v node`
-# on whatever runner calls this script, not necessarily one of GitHub's own hosted images
-# (shared.yml only requires an arm64 macOS image), so it isn't safe to assume it's already free of
-# characters that would otherwise break out of the literal.
+# Escaped for the single-quoted SQL literal below (doubling any embedded quote) — the calling
+# runner isn't guaranteed to be one of GitHub's own hosted images.
 escaped_path="${target_path//\'/\'\'}"
 
 seed_db() {

@@ -60,10 +60,8 @@ export async function startVideoRecording(
   outputFile: string,
   options: VideoRecordingOptions = {},
 ): Promise<void> {
-  // Mirrors startVideoStream's identical validation — both options reach the same native
-  // VideoFrameEncoder/ParseVideoEncoderOptions path (fps only with `audio` or its own presence;
-  // bitrate either way, see VideoRecordingOptions's own doc comments), which otherwise silently
-  // truncates an out-of-range value into an arbitrary 32-bit one instead of rejecting it.
+  // Mirrors startVideoStream's identical validation — both reach the same native encoder path,
+  // which otherwise silently truncates an out-of-range value instead of rejecting it.
   if (options.fps !== undefined && (!Number.isFinite(options.fps) || options.fps < 1)) {
     throw new RangeError(`fps must be a finite number >= 1, got ${options.fps}`);
   }

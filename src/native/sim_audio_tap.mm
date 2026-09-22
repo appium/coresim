@@ -132,12 +132,9 @@ class AudioTapSession::Impl {
       throw NSErrorException(MakeStatusError(4, @"Failed to read the tap's audio format", status));
     }
 
-    // UID includes the tap's own per-session UUID, not just udid_ — this addon explicitly allows
-    // any number of concurrent audio-enabled sessions on the same device (and Stop() destroying a
-    // prior aggregate device is documented asynchronous, so its UID isn't safely reusable right
-    // away either). A udid_-only UID would let two sessions collide on the same persistent UID,
-    // which CoreAudio dedupes — silently handing one session the other's (possibly stale)
-    // AudioObjectID instead of creating its own.
+    // UID includes the tap's own per-session UUID, not just udid_ — concurrent sessions on the
+    // same device are supported, and a udid_-only UID would let two collide on the same
+    // persistent UID, which CoreAudio dedupes rather than erroring.
     NSDictionary* aggregateDescription = @{
       @(kAudioAggregateDeviceNameKey) : [NSString stringWithFormat:@"coresim-audio-%@", udid_],
       @(kAudioAggregateDeviceUIDKey) :
@@ -248,11 +245,8 @@ class AudioTapSession::Impl {
     try {
       onBuffer_(data, time);
     } catch (const std::exception& e) {
-      // onBuffer_ (the caller's PCM consumer, e.g. AudioEncoder::EncodePCM) documents that it can
-      // throw NSErrorException on a converter failure — without this, it would escape this bare
-      // CoreAudio IOProc callback uncaught and crash the whole process. Routed through the same
-      // onError_/StopFromQueue() path PollAndRefresh's own errors use just above — already safe to
-      // call from here (queue_-serialized), unlike the public, blocking Stop().
+      // onBuffer_ (e.g. AudioEncoder::EncodePCM) can throw — uncaught, it'd crash the process.
+      // Routed through the same onError_/StopFromQueue() path PollAndRefresh's own errors use.
       if (onError_) {
         onError_(MakeError(10, [NSString stringWithFormat:@"Audio buffer consumer failed: %s", e.what()]));
       }

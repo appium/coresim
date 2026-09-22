@@ -56,13 +56,10 @@ function isIOSRuntime(runtimeIdentifier: string): boolean {
 }
 
 /**
- * The Core Audio process tap (sim_audio_tap.mm, behind `audio: true`) needs at least one guest
- * process that has already registered with the host's audio HAL — right after boot this can
- * transiently be empty before SpringBoard has touched CoreAudio at all yet. Polls `fn` via
- * waitForCondition instead of treating that as a hard failure; any other error is passed through
- * immediately (per waitForCondition's own contract) for the caller's own
- * isAudioCaptureUnavailable()/t.skip() handling, same as any other environment-dependent
- * unavailability.
+ * The Core Audio process tap needs at least one guest process already registered with the host's
+ * audio HAL — right after boot this can transiently be empty. Polls `fn` via waitForCondition
+ * instead of treating that as a hard failure; any other error passes through immediately for the
+ * caller's own isAudioCaptureUnavailable()/t.skip() handling.
  */
 async function retryUntilAudioProcessesFound<T>(fn: () => Promise<T>): Promise<T> {
   let result: T | undefined;
@@ -86,13 +83,10 @@ async function retryUntilAudioProcessesFound<T>(fn: () => Promise<T>): Promise<T
 }
 
 /**
- * Whether `err` means the audio-capture side of `audio: true` isn't usable in this environment —
- * host macOS predates 14.2, or no guest process ever registered with CoreAudio (see
- * retryUntilAudioProcessesFound) — as opposed to a real bug worth failing the test over. Distinct
- * from the host's "System Audio Recording Only" TCC permission itself, which can't be detected
- * this way at all (see CLAUDE.md) — a denial there surfaces as silent PCM, not an error, so these
- * tests only assert the pipeline runs and produces a structurally valid track either way, never
- * that it's actually audible.
+ * Whether `err` means the audio-capture side of `audio: true` isn't usable here — host macOS
+ * predates 14.2, or no guest process ever registered with CoreAudio — rather than a real bug.
+ * Doesn't cover a TCC denial, which isn't a thrown error at all (see CLAUDE.md); these tests only
+ * assert the pipeline produces a structurally valid track, never that it's actually audible.
  */
 function isAudioCaptureUnavailable(err: unknown): boolean {
   return (
@@ -645,10 +639,8 @@ describe('NativeSimctl integration', () => {
             }
             throw err;
           }
-          // Let real PCM (silent unless the host's "System Audio Recording Only" TCC permission is
-          // actually granted AND the guest happens to be making sound — neither is guaranteed, see
-          // CLAUDE.md) actually flow before stopping, so the audio track ends up with real samples
-          // rather than being added to the writer but never written to.
+          // Give real PCM time to flow before stopping, so the audio track ends up with actual
+          // samples rather than being added to the writer but never written to.
           await new Promise((resolve) => setTimeout(resolve, 1000));
           await sim.stopVideoRecording(device!.udid);
 
@@ -662,15 +654,12 @@ describe('NativeSimctl integration', () => {
             outputFile,
           ]);
           const streams = streamsOutput.trim().split('\n');
-          // CoreSimulator's own private recorder is bypassed entirely once `audio` is set (see
-          // AVRecordingSession) — this addon's own encoder always defaults to h264, unlike the
-          // private recorder's own default asserted above.
+          // `audio` bypasses the private recorder — this addon's own encoder always defaults to
+          // h264, unlike the private recorder's own default asserted above.
           assert.ok(streams.includes('h264,video'), `expected an h264 video stream, got: ${streams}`);
           assert.ok(streams.includes('aac,audio'), `expected an AAC audio stream, got: ${streams}`);
 
-          // Decodes both tracks end-to-end — validates the AVAssetWriter passthrough muxing (each
-          // track's sourceFormatHint, the AAC encoder's priming trim), not just that ffprobe can
-          // enumerate the streams.
+          // Decodes both tracks end-to-end, not just that ffprobe can enumerate the streams.
           await execFileAsync('ffmpeg', ['-v', 'error', '-i', outputFile, '-f', 'null', '-']);
         } finally {
           await fs.promises.rm(outputFile, {force: true});

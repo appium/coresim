@@ -54,8 +54,8 @@ class AVRecordingSession::Impl {
         audioTap_ = std::make_unique<AudioTapSession>(
             udid_, [this](const AudioBufferList* data, const AudioTimeStamp* time) { HandleAudioPCM(data, time); },
             [this](NSError* error) {
-              // A single failed process-list refresh doesn't mean the tap stopped — see this
-              // code's own doc comment. Every other onError code does, and is fatal here.
+              // A failed process-list refresh (kAudioTapNonFatalProcessListRefreshErrorCode) isn't
+              // fatal — the tap keeps running. Everything else is.
               if ([error.domain isEqualToString:kAudioTapErrorDomain] &&
                   error.code == kAudioTapNonFatalProcessListRefreshErrorCode) {
                 return;
@@ -65,10 +65,8 @@ class AVRecordingSession::Impl {
             [] {});
         audioTap_->Start();
 
-        // audioTap_->Start() can invoke HandleAudioPCM (on the tap's own queue) before this
-        // function returns — audioEncoder_ is written here under mutex_, and HandleAudioPCM reads
-        // it under the same lock, so that racing read can never observe a partially-constructed
-        // pointer; it just sees "not ready yet" and skips the buffer.
+        // Start() can invoke HandleAudioPCM before returning, so audioEncoder_ is written under
+        // mutex_ (same lock HandleAudioPCM reads it under) to avoid a torn/racy pointer read.
         auto encoder = std::make_unique<AudioEncoder>(
             audioTap_->Format(), [this](CMSampleBufferRef sampleBuffer) { HandleAudioSample(sampleBuffer); },
             &clockOrigin_);
@@ -95,15 +93,11 @@ class AVRecordingSession::Impl {
     }
   }
 
-  // Must be fully idempotent, including concurrently and regardless of the first call's outcome:
-  // besides ordinary caller retries, the env cleanup hook (coresim.mm) also unconditionally calls
-  // Stop() on every still-registered session — including one the caller already stopped
-  // successfully moments earlier but whose NativeAVRecording JS wrapper GC hasn't yet deregistered
-  // (see CLAUDE.md's ThreadSafeFunction-release ordering note for why the hook must call it
-  // unconditionally at all). A second real attempt to finalize an AVAssetWriter that's already
-  // `.completed` throws an uncaught NSException and aborts the whole process — so only the FIRST
-  // call ever touches the writer/encoders; every later call (or one arriving while the first is
-  // still in flight) just replays that same eventual outcome instead.
+  // Must be fully idempotent, including concurrently: the env cleanup hook (coresim.mm) also
+  // unconditionally calls Stop() on every still-registered session, including one already stopped
+  // moments earlier whose JS wrapper hasn't GC'd yet. Finalizing an already-`.completed`
+  // AVAssetWriter throws an uncaught NSException and aborts the process — so only the FIRST call
+  // ever touches the writer/encoders; every later (or concurrent) call just replays that outcome.
   void Stop(std::function<void(NSError*)> onFinished) {
     bool isFirstCall;
     bool resultReady;
@@ -126,15 +120,10 @@ class AVRecordingSession::Impl {
       return;
     }
 
-    // Blocks until each has fully torn down — only then is it safe to finalize the writer without
-    // racing a further HandleVideoSample/HandleAudioSample call. Also the point past which no new
-    // Fail() can ever start (both encoders' onError channels are now silenced), which is what
-    // makes the stopResultReady_ check right below race-free: a Fail() concurrent with the Stop()
-    // calls above (e.g. from the audio tap's own poll timer, mid-teardown) is guaranteed to have
-    // either not started yet, or to have already fully completed — including its own
-    // [writer_ cancelWriting] — by the time these two calls return (each one's own Stop()
-    // documents blocking/draining until any in-flight callback, and thus any Fail() it triggered,
-    // has finished).
+    // Blocks until each has fully torn down — safe to finalize the writer afterward without racing
+    // a further sample callback, and also the point past which no new Fail() can start (both
+    // encoders' onError channels are now silenced) — which is what makes the stopResultReady_
+    // check below race-free against a concurrent Fail() (e.g. the audio tap's own poll timer).
     if (videoEncoder_) {
       videoEncoder_->Stop();
     }
@@ -153,11 +142,9 @@ class AVRecordingSession::Impl {
       ClearPendingAudioLocked();
     }
     if (alreadyFailed) {
-      // A concurrent Fail() already recorded the session's one true outcome (and, if the writer
-      // had started, already cancelled it) while the Stop() calls above were still draining —
-      // replay that same outcome instead of touching the writer again: it may already be
-      // `.cancelled`, and finishWritingWithCompletionHandler on that state throws an uncaught
-      // NSException that aborts the whole process.
+      // A concurrent Fail() already recorded the outcome and (if started) cancelled the writer —
+      // replay that outcome instead of touching it again; finishWriting on a cancelled writer
+      // throws an uncaught NSException.
       if (onFinished) {
         onFinished(failedError);
       }
@@ -241,13 +228,9 @@ class AVRecordingSession::Impl {
     AppendAudioLocked(sampleBuffer);
   }
 
-  // Runs on AudioTapSession's own serial queue (see its Start() call site's comment above) —
-  // audioEncoder_ is only ever read/written under mutex_, so a racing HandleAudioPCM/Start() pair
-  // can't observe a partially-constructed pointer (see Start()'s own comment). If EncodePCM
-  // throws, it's intentionally left to propagate out of here: AudioTapSession::HandleBuffer (this
-  // callback's own caller) catches it, reports it via the onError callback below (-> Fail()), and
-  // safely stops itself — see sim_audio_tap.h's onBuffer doc comment for why this method must
-  // never try to stop audioTap_ itself (it's running on audioTap_'s own queue — would deadlock).
+  // Runs on AudioTapSession's own queue; audioEncoder_ is guarded by mutex_ (see Start()). A throw
+  // from EncodePCM is left to propagate — AudioTapSession::HandleBuffer catches it and self-stops
+  // (see sim_audio_tap.h's onBuffer doc) — this method must never call audioTap_->Stop() itself.
   void HandleAudioPCM(const AudioBufferList* data, const AudioTimeStamp* time) {
     AudioEncoder* encoder;
     {
@@ -300,11 +283,9 @@ class AVRecordingSession::Impl {
     }
   }
 
-  // Caller holds mutex_. Records the session's single, final outcome the first time it's called
-  // (from either FailLocked or Stop()'s own completion below) — a no-op on any later call, so
-  // `stopResultError_` always reflects whichever happened first. Returns any Stop() calls that
-  // arrived while the outcome was still unknown and were queued (see Stop()) waiting for it —
-  // caller must invoke each with `error`, unlocked (they're arbitrary caller callbacks).
+  // Caller holds mutex_. Records the session's single, final outcome — a no-op if already
+  // recorded. Returns any Stop() calls queued while the outcome was unknown; caller must invoke
+  // each with `error`, unlocked.
   std::vector<std::function<void(NSError*)>> RecordResultLocked(NSError* error) {
     if (stopResultReady_) {
       return {};
@@ -334,11 +315,9 @@ class AVRecordingSession::Impl {
   }
 
   // Called from either encoder's onError, or from HandleVideoSample on a writer-level failure —
-  // NOT holding mutex_ (would risk deadlocking against that same encoder's own queue if it's
-  // mid-callback elsewhere, see AppendVideoLocked/AppendAudioLocked's callers). Stops the OTHER
-  // (still-running) encoder synchronously — the one whose callback we're currently inside is
-  // already tearing itself down internally right after this callback returns (its own error
-  // path), and calling its own blocking Stop() from within its own callback would deadlock.
+  // not holding mutex_ (could deadlock against that same encoder's own queue). Stops only the
+  // OTHER (still-running) encoder — the one whose callback we're inside is already tearing itself
+  // down on its own error path, and calling its own blocking Stop() here would deadlock.
   void Fail(NSError* error, bool fromVideo) {
     if (fromVideo) {
       if (audioTap_) {

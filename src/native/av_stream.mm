@@ -29,8 +29,8 @@ class AVStreamSession::Impl {
       audioTap_ = std::make_unique<AudioTapSession>(
           udid_, [this](const AudioBufferList* data, const AudioTimeStamp* time) { HandleAudioPCM(data, time); },
           [this](NSError* error) {
-            // A single failed process-list refresh doesn't mean the tap stopped — see this code's
-            // own doc comment (sim_audio_tap.h). Every other onError code does, and is fatal here.
+            // A failed process-list refresh (kAudioTapNonFatalProcessListRefreshErrorCode) isn't
+            // fatal — the tap keeps running. Everything else is.
             if ([error.domain isEqualToString:kAudioTapErrorDomain] &&
                 error.code == kAudioTapNonFatalProcessListRefreshErrorCode) {
               return;
@@ -40,11 +40,8 @@ class AVStreamSession::Impl {
           [] {});
       audioTap_->Start();
 
-      // audioTap_->Start() can invoke HandleAudioPCM (on the tap's own queue) before this function
-      // returns — audioEncoder_ is written here under audioEncoderMutex_, and HandleAudioPCM reads
-      // it under the same lock, so that racing read can never observe a partially-constructed
-      // pointer; it just sees "not ready yet" and skips the buffer (see av_recording.mm's
-      // identical note for the full reasoning).
+      // Start() can invoke HandleAudioPCM before returning, so audioEncoder_ is written under
+      // audioEncoderMutex_ (same lock HandleAudioPCM reads it under) to avoid a torn/racy read.
       auto encoder = std::make_unique<AudioEncoder>(
           audioTap_->Format(), [this](CMSampleBufferRef sampleBuffer) { HandleAudioSample(sampleBuffer); },
           &clockOrigin_);
@@ -73,12 +70,9 @@ class AVStreamSession::Impl {
   }
 
  private:
-  // Runs on AudioTapSession's own serial queue — audioEncoder_ is only ever read/written under
-  // audioEncoderMutex_ (see Start()'s comment). If EncodePCM throws, it's intentionally left to
-  // propagate out of here: AudioTapSession::HandleBuffer (this callback's own caller) catches it,
-  // reports it via the onError callback (-> Fail()), and safely stops itself — see
-  // sim_audio_tap.h's onBuffer doc comment for why this method must never try to stop audioTap_
-  // itself (it's running on audioTap_'s own queue — would deadlock).
+  // Runs on AudioTapSession's own queue; audioEncoder_ is guarded by audioEncoderMutex_ (see
+  // Start()). A throw from EncodePCM is left to propagate — AudioTapSession::HandleBuffer catches
+  // it and self-stops (see sim_audio_tap.h's onBuffer doc) — never call audioTap_->Stop() here.
   void HandleAudioPCM(const AudioBufferList* data, const AudioTimeStamp* time) {
     AudioEncoder* encoder;
     {
@@ -134,12 +128,9 @@ class AVStreamSession::Impl {
     }
   }
 
-  // Called from either encoder's onError. Stops only the OTHER (still-running) encoder
-  // synchronously — the failing one is already tearing itself down internally right after this
-  // callback returns (its own error path); calling its own blocking Stop() from within its own
-  // callback would deadlock. Its actual resource teardown still completes on its own schedule —
-  // safe, since it guarantees no further onSample_ call once its own error path started (see
-  // av_recording.mm's identical note for the full reasoning).
+  // Called from either encoder's onError. Stops only the OTHER (still-running) one — the failing
+  // one is already tearing itself down on its own error path, and calling its own blocking Stop()
+  // from within its own callback would deadlock.
   void Fail(NSError* error, bool fromVideo) {
     if (!running_.exchange(false)) {
       return;  // already stopping/stopped
