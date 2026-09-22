@@ -146,6 +146,14 @@ toolchain (`make` and `xcodebuild`).
   there would deadlock). `onEnd`, fired once from whichever path wins, is the only safe point to
   release the N-API `ThreadSafeFunction`s. Independent of `startVideoRecording` — any number of
   streams and one recording can run concurrently.
+- **A live `startVideoStream` needs two separate defenses against `worker.terminate()`.** An
+  `env.AddCleanupHook` in `coresim.mm` stops every registered `VideoStreamSession` before Node
+  force-releases the Environment's TSFNs — but a callback *already queued* on a TSFN (frames piled
+  up while the JS thread was blocked) can still fire mid-teardown, where calling into JS throws;
+  node-addon-api's own `WrapVoidCallback` re-throwing that as a JS exception then aborts the whole
+  process on a torn-down env. So each TSFN callback body also wraps its `jsCallback.Call(...)` in
+  its own `try { ... } catch (...) {}` — dropping a frame nothing can receive is safe, letting the
+  exception escape isn't.
 - **A `VideoStream` can't actually be garbage-collected while running — not a bug.** Its
   `onAccessUnit`/`onError` callbacks close over the `VideoStream` itself, and a live
   `Napi::ThreadSafeFunction` holds a persistent V8 reference to them until `.Release()`d (only via

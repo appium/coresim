@@ -948,18 +948,31 @@ class NativeDevice : public Napi::ObjectWrap<NativeDevice> {
               device, options,
               [accessUnitTsfn](coresim::VideoAccessUnit unit) mutable {
                 accessUnitTsfn.BlockingCall([unit = std::move(unit)](Napi::Env env, Napi::Function jsCallback) mutable {
-                  Napi::Object obj = Napi::Object::New(env);
-                  obj.Set("data", Napi::Buffer<uint8_t>::Copy(env, unit.data.data(), unit.data.size()));
-                  obj.Set("isKeyFrame", Napi::Boolean::New(env, unit.isKeyFrame));
-                  obj.Set("sequence", Napi::Number::New(env, static_cast<double>(unit.sequence)));
-                  obj.Set("timestampMicros", Napi::Number::New(env, static_cast<double>(unit.timestampMicros)));
-                  jsCallback.Call({obj});
+                  // The Environment can already be mid-teardown by the time a queued callback
+                  // like this one actually runs (e.g. worker.terminate() while frames were still
+                  // piling up) — node-addon-api's own WrapVoidCallback would otherwise re-throw
+                  // whatever escapes here as a JS exception, which itself aborts the process on a
+                  // torn-down env instead of just failing to deliver a frame nothing can receive
+                  // anymore. See CLAUDE.md.
+                  try {
+                    Napi::Object obj = Napi::Object::New(env);
+                    obj.Set("data", Napi::Buffer<uint8_t>::Copy(env, unit.data.data(), unit.data.size()));
+                    obj.Set("isKeyFrame", Napi::Boolean::New(env, unit.isKeyFrame));
+                    obj.Set("sequence", Napi::Number::New(env, static_cast<double>(unit.sequence)));
+                    obj.Set("timestampMicros", Napi::Number::New(env, static_cast<double>(unit.timestampMicros)));
+                    jsCallback.Call({obj});
+                  } catch (...) {
+                  }
                 });
               },
               [errorTsfn](NSError* error) mutable {
                 NSErrorException exception(error);
                 errorTsfn.BlockingCall([exception](Napi::Env env, Napi::Function jsCallback) {
-                  jsCallback.Call({NSErrorExceptionToJsError(env, exception).Value()});
+                  // See accessUnitTsfn's callback above.
+                  try {
+                    jsCallback.Call({NSErrorExceptionToJsError(env, exception).Value()});
+                  } catch (...) {
+                  }
                 });
               },
               [accessUnitTsfn, errorTsfn]() mutable {
