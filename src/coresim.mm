@@ -1052,16 +1052,25 @@ class NativeDevice : public Napi::ObjectWrap<NativeDevice> {
            info[argIndex].As<Napi::Object>().Get("audio").As<Napi::Boolean>().Value();
   }
 
-  // Mirrors `simctl io <udid> recordVideo` when `options.audio` is unset — CoreSimulator's own
-  // private, video-only recorder (see sim_video_recording.mm). With `options.audio`, drives this
-  // addon's own combined video+audio encoders instead (av_recording.h) — the private recorder has
-  // no per-frame hook to mux audio into. Either way returns a handle (NativePrivateRecordingHandle
-  // or NativeAVRecording — see their own doc comments) exposing the identical `stop()` shape, so
-  // the caller never needs to know which path it took.
+  static bool OptionsHasFps(const Napi::CallbackInfo& info, size_t argIndex) {
+    return info.Length() > argIndex && info[argIndex].IsObject() && info[argIndex].As<Napi::Object>().Has("fps") &&
+           info[argIndex].As<Napi::Object>().Get("fps").IsNumber();
+  }
+
+  // Mirrors `simctl io <udid> recordVideo` by default — CoreSimulator's own private, video-only
+  // recorder (see sim_video_recording.mm), which supports `mask`/`bitrate` but has no polling loop
+  // for `fps` to cap. With `options.audio` OR an explicit `options.fps` (which only means something
+  // against a real polling loop), drives this addon's own encoders instead (av_recording.h) — video
+  // only when `fps` was the sole reason, video+audio when `audio` was set too — since the private
+  // recorder has no per-frame hook to mux audio into and no `fps` knob either way. `mask` is not
+  // supported on this path. Either way returns a handle (NativePrivateRecordingHandle or
+  // NativeAVRecording — see their own doc comments) exposing the identical `stop()` shape, so the
+  // caller never needs to know which path it took.
   Napi::Value StartVideoRecording(const Napi::CallbackInfo& info) {
     NSString* outputFile = @(info[0].As<Napi::String>().Utf8Value().c_str());
-    if (OptionsWantAudio(info, 1)) {
-      return StartAVRecording(info, outputFile);
+    bool wantsAudio = OptionsWantAudio(info, 1);
+    if (wantsAudio || OptionsHasFps(info, 1)) {
+      return StartAVRecording(info, outputFile, wantsAudio);
     }
     return StartPrivateVideoRecording(info, outputFile);
   }
@@ -1073,7 +1082,7 @@ class NativeDevice : public Napi::ObjectWrap<NativeDevice> {
     id device = device_;
     NSString* displayId = nil;
     coresim::VideoMaskPolicy mask = coresim::VideoMaskPolicy::kIgnored;
-    NSDictionary* assetWriterOutputSettings = @{};
+    NSMutableDictionary* assetWriterOutputSettings = [NSMutableDictionary dictionary];
     if (info.Length() > 1 && info[1].IsObject()) {
       Napi::Object options = info[1].As<Napi::Object>();
       if (options.Has("displayId") && options.Get("displayId").IsString()) {
@@ -1089,8 +1098,11 @@ class NativeDevice : public Napi::ObjectWrap<NativeDevice> {
       }
       if (options.Has("codec") && options.Get("codec").IsString()) {
         std::string codecValue = options.Get("codec").As<Napi::String>().Utf8Value();
-        AVVideoCodecType codecType = codecValue == "hevc" ? AVVideoCodecTypeHEVC : AVVideoCodecTypeH264;
-        assetWriterOutputSettings = @{AVVideoCodecKey : codecType};
+        assetWriterOutputSettings[AVVideoCodecKey] = codecValue == "hevc" ? AVVideoCodecTypeHEVC : AVVideoCodecTypeH264;
+      }
+      if (options.Has("bitrate") && options.Get("bitrate").IsNumber()) {
+        int bitrate = options.Get("bitrate").As<Napi::Number>().Int32Value();
+        assetWriterOutputSettings[AVVideoCompressionPropertiesKey] = @{AVVideoAverageBitRateKey : @(bitrate)};
       }
     }
     return RunAsync<id>(
@@ -1117,9 +1129,12 @@ class NativeDevice : public Napi::ObjectWrap<NativeDevice> {
         [](Napi::Env env, id device) -> Napi::Value { return NativePrivateRecordingHandle::NewInstance(env, device); });
   }
 
-  // Combined audio+video file recording — see av_recording.h. Resolves once the first sample
-  // (video or audio, whichever comes first) is written.
-  Napi::Value StartAVRecording(const Napi::CallbackInfo& info, NSString* outputFile) {
+  // Recording via this addon's own encoders — see av_recording.h. Combined audio+video when
+  // `captureAudio` is set, video-only (via the same VideoFrameEncoder, just no audio tap/track)
+  // when it's not — reached with `captureAudio == false` when `fps` was requested without `audio`
+  // (see StartVideoRecording). Resolves once the first sample (video, or whichever of video/audio
+  // comes first when both are captured) is written.
+  Napi::Value StartAVRecording(const Napi::CallbackInfo& info, NSString* outputFile, bool captureAudio) {
     Napi::Env env = info.Env();
     id device = device_;
     NSString* udid = DeviceUDID(device).UUIDString;
@@ -1134,8 +1149,10 @@ class NativeDevice : public Napi::ObjectWrap<NativeDevice> {
 
     return RunAsync<std::shared_ptr<coresim::AVRecordingSession>>(
         env,
-        [device, udid, videoOptions, outputFile, errorTsfn]() mutable -> std::shared_ptr<coresim::AVRecordingSession> {
-          auto session = std::make_shared<coresim::AVRecordingSession>(device, udid, videoOptions, outputFile);
+        [device, udid, videoOptions, outputFile, captureAudio,
+         errorTsfn]() mutable -> std::shared_ptr<coresim::AVRecordingSession> {
+          auto session =
+              std::make_shared<coresim::AVRecordingSession>(device, udid, videoOptions, outputFile, captureAudio);
           dispatch_semaphore_t sema = dispatch_semaphore_create(0);
           auto resolved = std::make_shared<std::atomic<bool>>(false);
           // Only ever written before `sema` is signaled on the "failed before starting" path

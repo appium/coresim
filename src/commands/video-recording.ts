@@ -17,13 +17,13 @@ declare module '../native-simctl.js' {
 const log = logger.getLogger('CoreSim');
 
 // One device's recording lifecycle: `start` is the in-flight (or already-settled)
-// startVideoRecording call, resolving to the live native handle — with `options.audio` unset,
-// this addresses CoreSimulator's own internally-tracked private recorder (no real local resource,
-// same as before this field existed); with it set, it's a real local resource (this addon's own
-// video+audio encoders) with no server-side counterpart, so a handle is the only way to stop it
-// either way. `stop`, once set, is the in-flight native stop call shared by every concurrent
-// stopVideoRecording for this same recording — see stopVideoRecording for why a second one must
-// reuse it rather than issuing its own.
+// startVideoRecording call, resolving to the live native handle — with both `options.audio` and
+// `options.fps` unset, this addresses CoreSimulator's own internally-tracked private recorder (no
+// real local resource, same as before this field existed); with either set, it's a real local
+// resource (this addon's own encoders) with no server-side counterpart, so a handle is the only
+// way to stop it either way. `stop`, once set, is the in-flight native stop call shared by every
+// concurrent stopVideoRecording for this same recording — see stopVideoRecording for why a second
+// one must reuse it rather than issuing its own.
 interface RecordingState {
   readonly start: Promise<NativeVideoRecordingHandle>;
   stop?: Promise<void>;
@@ -36,17 +36,17 @@ const activeRecordings = new Map<string, RecordingState>();
 /**
  * Starts recording the device's display (and, with `options.audio`, its audio too, muxed as a
  * second track) to `outputFile` — the native equivalent of `simctl io <udid> recordVideo` when
- * `audio` is unset. Resolves once the first frame has actually been recorded, so it's always safe
- * to call {@link stopVideoRecording} immediately after. Only one recording may be active per
- * device at a time; starting a second one while the first is still running rejects.
+ * both `audio` and `fps` are unset. Resolves once the first frame has actually been recorded, so
+ * it's always safe to call {@link stopVideoRecording} immediately after. Only one recording may be
+ * active per device at a time; starting a second one while the first is still running rejects.
  *
- * Without `audio`, rejects with `NativeSimUnavailableError` if this CoreSimulator predates the
- * private capture API — confirmed missing on Xcode 16.4's, present on Xcode 26.5+ (Apple documents
- * no exact version floor). With `audio`, see {@link VideoRecordingOptions.audio}'s own doc comment
- * for its host-permission requirement; a failure *after* this call has already resolved (e.g. the
- * audio tap's guest process set vanishing mid-recording) doesn't reject it — it's logged here
- * instead — call {@link stopVideoRecording} to observe it as a rejection and release the
- * recording's resources.
+ * Without `audio`/`fps`, rejects with `NativeSimUnavailableError` if this CoreSimulator predates
+ * the private capture API — confirmed missing on Xcode 16.4's, present on Xcode 26.5+ (Apple
+ * documents no exact version floor). With either set, see {@link VideoRecordingOptions.audio}'s
+ * own doc comment for the host-permission requirement that applies specifically to `audio`; a
+ * failure *after* this call has already resolved (e.g. the audio tap's guest process set vanishing
+ * mid-recording) doesn't reject it — it's logged here instead — call {@link stopVideoRecording} to
+ * observe it as a rejection and release the recording's resources.
  *
  * @param udid — UDID of the device to record; must be booted
  * @param outputFile — filesystem path to write the video to; resolved against `process.cwd()` if
@@ -67,8 +67,8 @@ export async function startVideoRecording(
   const absoluteOutputFile = path.resolve(outputFile);
   const startPromise = runCatchingAsync(async () =>
     (await this._findDevice(udid)).startVideoRecording(absoluteOutputFile, options, (err) => {
-      // Only ever invoked on the `audio` path — see its own doc comment above. No live consumer
-      // to report to (this call already resolved), so logged instead of lost.
+      // Only ever invoked on the `audio`/`fps` (own-encoder) path — see its own doc comment above.
+      // No live consumer to report to (this call already resolved), so logged instead of lost.
       log.error(`Unhandled video recording error for device '${udid}': ${toTypedError(err).stack ?? err}`);
     }),
   );

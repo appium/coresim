@@ -140,7 +140,8 @@ export interface VideoRecordingOptions {
   /**
    * For a non-rectangular display (e.g. a Dynamic Island cutout): `'ignored'` (default) saves the
    * unmasked framebuffer, `'black'` renders the mask black, `'alpha'` is not supported and
-   * behaves like `'black'`. Only applies when `audio` is not set — see its own doc comment.
+   * behaves like `'black'`. Only applies when neither `audio` nor `fps` is set — see their doc
+   * comments.
    */
   mask?: 'ignored' | 'alpha' | 'black';
   /**
@@ -152,19 +153,22 @@ export interface VideoRecordingOptions {
    * permissions can, and why a denial can't be detected as a thrown error either (it surfaces only
    * as a silent, audio-less/near-silent recording).
    *
-   * Switches the underlying implementation: without `audio`, this drives CoreSimulator's own
-   * private, video-only recorder (supports `mask`, ignores `fps`/`bitrate`); with `audio`, it
-   * drives this addon's own VideoToolbox + Core Audio encoders instead (the private recorder has
-   * no per-frame hook to mux audio into) — `mask` is not supported there, but `fps`/`bitrate`
-   * (mirroring {@link VideoStreamOptions}) are.
+   * Switches the underlying implementation, same as an explicit `fps` does (see its own doc
+   * comment) — setting either routes this through this addon's own VideoToolbox + Core Audio
+   * encoders instead of CoreSimulator's private recorder, which has no per-frame hook to mux audio
+   * into.
    */
   audio?: boolean;
   /**
-   * Max frames/sec to poll the framebuffer at when `audio` is set — see {@link VideoStreamOptions}
-   * `fps` for the identical semantics. Ignored without `audio`.
+   * Max frames/sec to poll the framebuffer at — see {@link VideoStreamOptions} `fps` for the
+   * identical semantics. Meaningless against CoreSimulator's private recorder (it captures on its
+   * own internal cadence, not one we poll), so setting `fps` — even without `audio` — switches this
+   * recording to this addon's own VideoToolbox-based encoder instead (the same one `audio` switches
+   * to, just without the audio track when `audio` itself is unset). That switch costs `mask`
+   * support, which only the private recorder implements.
    */
   fps?: number;
-  /** Target average bitrate, in bits/sec, when `audio` is set. Ignored without `audio`. */
+  /** Target average bitrate, in bits/sec. Respected on either implementation. */
   bitrate?: number;
 }
 
@@ -394,9 +398,10 @@ export interface NativeDeviceHandle {
   getWebInspectorSocket(): Promise<string>;
   screenshot(options?: {format?: 'png' | 'jpeg'; displayId?: string; quality?: number}): Promise<Buffer>;
   getDisplays(): Promise<SimDisplayInfo[]>;
-  // `mask` only applies without `audio`; `fps`/`bitrate` only apply with it — see
-  // VideoRecordingOptions's own doc comment for why. `onError` is only ever invoked on the
-  // `audio` path (a live mid-recording failure — the private recorder has no such channel).
+  // `mask` only applies without `audio`/`fps`; `bitrate` applies either way — see
+  // VideoRecordingOptions's own doc comments for why. `onError` is only ever invoked on the
+  // `audio`/`fps` (own-encoder) path — a live mid-recording failure, which the private recorder
+  // has no channel to report.
   startVideoRecording(
     outputFile: string,
     options:

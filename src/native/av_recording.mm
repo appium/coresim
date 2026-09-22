@@ -25,8 +25,12 @@ constexpr size_t kMaxPendingAudioSamples = 500;  // a few seconds of AAC packets
 
 class AVRecordingSession::Impl {
  public:
-  Impl(id device, NSString* udid, VideoEncoderOptions videoOptions, NSString* outputFile)
-      : device_(device), udid_(udid), videoOptions_(videoOptions), outputFile_(outputFile) {}
+  Impl(id device, NSString* udid, VideoEncoderOptions videoOptions, NSString* outputFile, bool captureAudio)
+      : device_(device),
+        udid_(udid),
+        videoOptions_(videoOptions),
+        outputFile_(outputFile),
+        captureAudio_(captureAudio) {}
 
   ~Impl() { TearDownIfNeeded(); }
 
@@ -46,21 +50,23 @@ class AVRecordingSession::Impl {
     }
 
     try {
-      audioTap_ = std::make_unique<AudioTapSession>(
-          udid_, [this](const AudioBufferList* data, const AudioTimeStamp* time) { HandleAudioPCM(data, time); },
-          [this](NSError* error) { Fail(error, /*fromVideo=*/false); }, [] {});
-      audioTap_->Start();
+      if (captureAudio_) {
+        audioTap_ = std::make_unique<AudioTapSession>(
+            udid_, [this](const AudioBufferList* data, const AudioTimeStamp* time) { HandleAudioPCM(data, time); },
+            [this](NSError* error) { Fail(error, /*fromVideo=*/false); }, [] {});
+        audioTap_->Start();
 
-      audioEncoder_ = std::make_unique<AudioEncoder>(
-          audioTap_->Format(), [this](CMSampleBufferRef sampleBuffer) { HandleAudioSample(sampleBuffer); },
-          &clockOrigin_);
-      // Audio's format is known immediately (unlike video's, learned from its first sample), so
-      // its input can be added to the writer right away — well before startWriting is called.
-      audioInput_ = [AVAssetWriterInput assetWriterInputWithMediaType:AVMediaTypeAudio
-                                                       outputSettings:nil
-                                                     sourceFormatHint:audioEncoder_->OutputFormatDescription()];
-      audioInput_.expectsMediaDataInRealTime = YES;
-      [writer_ addInput:audioInput_];
+        audioEncoder_ = std::make_unique<AudioEncoder>(
+            audioTap_->Format(), [this](CMSampleBufferRef sampleBuffer) { HandleAudioSample(sampleBuffer); },
+            &clockOrigin_);
+        // Audio's format is known immediately (unlike video's, learned from its first sample), so
+        // its input can be added to the writer right away — well before startWriting is called.
+        audioInput_ = [AVAssetWriterInput assetWriterInputWithMediaType:AVMediaTypeAudio
+                                                         outputSettings:nil
+                                                       sourceFormatHint:audioEncoder_->OutputFormatDescription()];
+        audioInput_.expectsMediaDataInRealTime = YES;
+        [writer_ addInput:audioInput_];
+      }
 
       videoEncoder_ = std::make_unique<VideoFrameEncoder>(
           device_, videoOptions_, [this](CMSampleBufferRef sampleBuffer) { HandleVideoSample(sampleBuffer); },
@@ -124,7 +130,7 @@ class AVRecordingSession::Impl {
       return;
     }
     [videoInput_ markAsFinished];
-    [audioInput_ markAsFinished];
+    [audioInput_ markAsFinished];  // no-op if `captureAudio_` was never set (audioInput_ stays nil)
     AVAssetWriter* writer = writer_;
     [writer finishWritingWithCompletionHandler:^{
       NSError* finishError = (writer.status == AVAssetWriterStatusCompleted) ? nil : writer.error;
@@ -342,6 +348,7 @@ class AVRecordingSession::Impl {
   NSString* udid_;
   VideoEncoderOptions videoOptions_;
   NSString* outputFile_;
+  bool captureAudio_;
 
   std::function<void()> onFirstSample_;
   std::function<void(NSError*)> onError_;
@@ -368,8 +375,8 @@ class AVRecordingSession::Impl {
 };
 
 AVRecordingSession::AVRecordingSession(id device, NSString* udid, VideoEncoderOptions videoOptions,
-                                       NSString* outputFile)
-    : impl_(std::make_unique<Impl>(device, udid, videoOptions, outputFile)) {}
+                                       NSString* outputFile, bool captureAudio)
+    : impl_(std::make_unique<Impl>(device, udid, videoOptions, outputFile, captureAudio)) {}
 
 AVRecordingSession::~AVRecordingSession() = default;
 
