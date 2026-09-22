@@ -51,6 +51,14 @@ on:
         required: false
         default: false
         type: boolean
+      grant-audio-capture:
+        description: Seed a "System Audio Recording Only" TCC grant for the test Node.js binary
+          before running tests, so the audio-capture integration tests exercise the real (not
+          permission-denied) path — only takes effect when SIP is disabled (see
+          scripts/ci/grant-audio-capture.sh); otherwise those tests just t.skip()
+        required: false
+        default: false
+        type: boolean
       timeout-minutes:
         description: Job-level timeout backstop — real simulator boot on a CI runner is far
           slower than on real hardware, so integration callers should raise this well above the
@@ -88,6 +96,23 @@ jobs:
 
       - name: Install npm dependencies
         run: npm install
+
+      - name: Check SIP status
+        id: sip
+        if: ${{ inputs.grant-audio-capture }}
+        run: |
+          status="$(csrutil status)"
+          echo "$status"
+          if echo "$status" | grep -qi "enabled"; then
+            echo "sip_disabled=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::System Integrity Protection appears enabled on ${{ inputs.platform }}; skipping the audio-capture TCC grant — those integration tests will fall back to t.skip()."
+          else
+            echo "sip_disabled=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Grant "System Audio Recording Only" to Node.js
+        if: ${{ inputs.grant-audio-capture && steps.sip.outputs.sip_disabled == 'true' }}
+        run: ./scripts/ci/grant-audio-capture.sh "$(command -v node)"
 
       - name: Run linter
         if: ${{ inputs.run-lint }}

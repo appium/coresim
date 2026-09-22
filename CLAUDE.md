@@ -159,6 +159,26 @@ toolchain (`make` and `xcodebuild`).
   `Napi::ThreadSafeFunction` holds a persistent V8 reference to them until `.Release()`d (only via
   `stop()`/`onEnd`), rooting the whole chain and keeping the event loop alive. An abandoned, never-
   `stop()`'d stream just runs forever, same as any other unclosed live resource in this addon.
+- **`startVideoRecording`/`startVideoStream`'s `audio` option (and an explicit `fps` on
+  `startVideoRecording`, which forces the same switch — see its own doc comment) route through this
+  addon's own encoders instead of CoreSimulator, since CoreSimulator has no audio capture API at
+  all.** `sim_audio_tap.mm` isolates one device's audio via a public Core Audio **process tap**
+  (`CATapDescription`/`AudioHardwareCreateProcessTap`, macOS 14.2+) scoped to that device's guest
+  PIDs (`FindGuestProcessPids` in `sim_process.mm`, the same UDID-matching mechanism
+  `getWebInspectorSocket` uses), wrapped in a private aggregate device for `AudioDeviceIOProcID`
+  delivery; `audio_encoder.mm` encodes the PCM to AAC-LC via `AudioConverterRef`; `av_recording.mm`/
+  `av_stream.mm` mux/interleave it alongside `video_encoder.mm`'s VideoToolbox output. **Needs the
+  host's "System Audio Recording Only" TCC permission** (`kTCCServiceAudioCapture`) — unlike every
+  other permission this addon handles, this one is keyed to the *host* process's own code identity
+  (not the guest's TCC.db, which `tcc_privacy.mm` can write to directly), has no query API, and a
+  denial isn't a catchable error — it's silent all-zero PCM, so a muxed/streamed audio track can be
+  structurally valid yet inaudible. Confirmed the host's own TCC.db can't be read to detect this
+  either: opening it at all needs the reading process to already have Full Disk Access, an equally
+  undetectable/ungrantable permission. CI seeds the grant directly since GitHub-hosted macOS runners
+  ship with SIP disabled (see `scripts/ci/grant-audio-capture.sh` and `integration-test.yml`'s
+  `grant-audio-capture` input) — the integration tests still only assert the audio track/units are
+  structurally valid, never that they're audible, and retry/`t.skip()` around the tap's own
+  transient "no guest process has touched CoreAudio yet" case.
 - **`getAppContainer` is a pure TS convenience wrapper over `appInfo`'s existing `Path`/
   `DataContainer`/`GroupContainers` fields** (see `commands/app.ts`) — no new native call, since
   `propertiesOfApplication:` already reports every container path `simctl get_app_container` does.

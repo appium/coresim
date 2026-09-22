@@ -32,6 +32,9 @@ jobs:
       run-xcodebuild-check: true
       # Without this, video codec/decode assertions silently skip — see test/fixtures.ts's hasFfmpeg().
       install-ffmpeg: true
+      # Without this, the audio-capture tests (startVideoRecording/startVideoStream's `audio`
+      # option) still run, just permission-denied — see grant-audio-capture.sh and CLAUDE.md.
+      grant-audio-capture: true
       # Real simulator boot/create/delete on a CI runner is far slower than on real hardware —
       # this only needs to cover ONE boot cycle per Xcode version since test/integration shares a
       # single throwaway device across all its cases.
