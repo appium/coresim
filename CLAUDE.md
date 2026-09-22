@@ -125,6 +125,40 @@ toolchain (`make` and `xcodebuild`).
 - **Screenshot capture (`getScreenshot`) reads the device's live framebuffer `IOSurface` in-process**
   — no entitlement, no temp file, no `simctl` subprocess — see `sim_screenshot.mm` for how the main
   display's IO port is found and rendered to PNG.
+- **Video recording (`startVideoRecording`/`stopVideoRecording`) drives a private CoreSimulator
+  API, reverse-engineered via `strings` on `simctl` — no public header exists.** The receiver is a
+  separate "capture service" descriptor (protocol `SimScreenCaptureService`), found by scanning
+  `-[device io] ioPorts` for whichever one responds to `startRecordingFromScreen:...`
+  (`ResolveVideoCaptureService`) — distinct from the display descriptor `getScreenshot` reads.
+  `outputFile` must be an `NSString*` absolute path (an `NSURL*` hangs the completion handler
+  forever); `maskPolicy` `0`/`1`/`2` map to ignored/alpha/black, alpha indistinguishable from black.
+  Calling `stop` before `start`'s completion handler has fired is a silent race —
+  `video-recording.ts` avoids it by never resolving `start` early. Throws
+  `NativeSimUnavailableError` if the port is missing entirely, a genuine CoreSimulator-version
+  floor (confirmed on Xcode 16.4) with no userland workaround.
+- **Video streaming (`startVideoStream`) uses no private API** — `startRecordingFromScreen:` only
+  writes to a file with no per-frame callback. `sim_video_stream.mm` instead polls the same display
+  `IOSurface` `getScreenshot` reads on a GCD timer, skips unchanged frames (`IOSurfaceGetSeed()`),
+  and encodes changed ones via a real `VTCompressionSession` (public VideoToolbox) into Annex-B
+  H.264/HEVC. Teardown needs two paths: `Impl::Stop()` (external callers) `dispatch_sync`s onto the
+  encoder queue to drain any in-flight `Tick()`; `Impl::StopFromQueue()` is the same minus that
+  barrier, for when `Tick()` itself triggers teardown (already on that queue — `dispatch_sync`ing
+  there would deadlock). `onEnd`, fired once from whichever path wins, is the only safe point to
+  release the N-API `ThreadSafeFunction`s. Independent of `startVideoRecording` — any number of
+  streams and one recording can run concurrently.
+- **A live `startVideoStream` needs two separate defenses against `worker.terminate()`.** An
+  `env.AddCleanupHook` in `coresim.mm` stops every registered `VideoStreamSession` before Node
+  force-releases the Environment's TSFNs — but a callback *already queued* on a TSFN (frames piled
+  up while the JS thread was blocked) can still fire mid-teardown, where calling into JS throws;
+  node-addon-api's own `WrapVoidCallback` re-throwing that as a JS exception then aborts the whole
+  process on a torn-down env. So each TSFN callback body also wraps its `jsCallback.Call(...)` in
+  its own `try { ... } catch (...) {}` — dropping a frame nothing can receive is safe, letting the
+  exception escape isn't.
+- **A `VideoStream` can't actually be garbage-collected while running — not a bug.** Its
+  `onAccessUnit`/`onError` callbacks close over the `VideoStream` itself, and a live
+  `Napi::ThreadSafeFunction` holds a persistent V8 reference to them until `.Release()`d (only via
+  `stop()`/`onEnd`), rooting the whole chain and keeping the event loop alive. An abandoned, never-
+  `stop()`'d stream just runs forever, same as any other unclosed live resource in this addon.
 - **`getAppContainer` is a pure TS convenience wrapper over `appInfo`'s existing `Path`/
   `DataContainer`/`GroupContainers` fields** (see `commands/app.ts`) — no new native call, since
   `propertiesOfApplication:` already reports every container path `simctl get_app_container` does.

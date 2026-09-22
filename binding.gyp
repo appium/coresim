@@ -13,7 +13,9 @@
         "src/native/tcc_privacy.mm",
         "src/native/sim_pasteboard.mm",
         "src/native/sim_process.mm",
-        "src/native/sim_screenshot.mm"
+        "src/native/sim_screenshot.mm",
+        "src/native/sim_video_recording.mm",
+        "src/native/sim_video_stream.mm"
       ],
       "include_dirs": [
         "<!@(node -p \"require('node-addon-api').include\")"
@@ -42,9 +44,13 @@
         "OTHER_LDFLAGS": [
           "-framework", "Foundation",
           "-framework", "AppKit",
+          "-framework", "AVFoundation",
           "-framework", "CoreImage",
+          "-framework", "CoreMedia",
+          "-framework", "CoreVideo",
           "-framework", "ImageIO",
           "-framework", "IOSurface",
+          "-framework", "VideoToolbox",
           "-lsqlite3"
         ]
       }

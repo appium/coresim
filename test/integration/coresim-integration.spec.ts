@@ -133,24 +133,29 @@ function compareVersions(a: string, b: string): number {
   return 0;
 }
 
-/** `"26.4"` for "Xcode 26.4.1", or `null` if unparseable. */
-function activeXcodeMajorMinor(): string | null {
-  const output = execFileSync('xcodebuild', ['-version'], {encoding: 'utf8'});
-  const match = /^Xcode (\d+)\.(\d+)/.exec(output);
+/**
+ * `"18.5"` for the iOS Simulator SDK the active Xcode actually ships, or `null` if unparseable.
+ * Xcode's own version stopped tracking the iOS version it bundles around Xcode 16 (16.4 ships the
+ * 18.5 SDK, not "16.x") — this reads the real bundled version instead of assuming they match.
+ */
+function activeSimulatorSdkVersion(): string | null {
+  const output = execFileSync('xcrun', ['--sdk', 'iphonesimulator', '--show-sdk-version'], {encoding: 'utf8'});
+  const match = /^(\d+)\.(\d+)/.exec(output.trim());
   return match ? `${match[1]}.${match[2]}` : null;
 }
 
 // CI runner images pre-install several simulator runtimes as shared, Xcode-independent volumes
 // (simctl list runtimes shows iOS 26.2/26.4/26.5 regardless of the active Xcode) — fixtures[0]
 // would pick an arbitrary one instead of the runtime the job's matrix entry actually asked for.
-// Prefer a runtime matching the active Xcode's major.minor; fall back to the newest installed.
+// Prefer the runtime matching the active Xcode's own bundled SDK version; fall back to the newest
+// installed only if that exact runtime isn't present.
 function selectTarget(fixtures: RuntimeFixture[]): RuntimeFixture[] {
   if (fixtures.length === 0) {
     return [];
   }
-  const xcodeVersion = activeXcodeMajorMinor();
-  const exactMatch = xcodeVersion
-    ? fixtures.find((f) => f.runtimeVersion === xcodeVersion || f.runtimeVersion.startsWith(`${xcodeVersion}.`))
+  const sdkVersion = activeSimulatorSdkVersion();
+  const exactMatch = sdkVersion
+    ? fixtures.find((f) => f.runtimeVersion === sdkVersion || f.runtimeVersion.startsWith(`${sdkVersion}.`))
     : undefined;
   return [exactMatch ?? [...fixtures].sort((a, b) => compareVersions(b.runtimeVersion, a.runtimeVersion))[0]];
 }
@@ -480,6 +485,186 @@ describe('NativeSimctl integration', () => {
         const highQuality = await sim.getScreenshot(device!.udid, {format: 'jpeg', quality: 95});
         assert.ok(lowQuality.length < highQuality.length, 'lower JPEG quality should encode smaller');
         await assert.rejects(sim.getScreenshot(device!.udid, {format: 'jpeg', quality: 101}), RangeError);
+      });
+
+      it('records a video of the booted device, enforcing one recording at a time', async (t) => {
+        const outputFile = path.join(os.tmpdir(), `coresim-video-test-${Date.now()}-${process.pid}.mp4`);
+        assert.strictEqual(await sim.isVideoRecording(device!.udid), false);
+        try {
+          await sim.startVideoRecording(device!.udid, outputFile);
+        } catch (err) {
+          if (err instanceof NativeSimUnavailableError) {
+            return t.skip(`video recording unavailable on this CoreSimulator: ${err.message}`);
+          }
+          throw err;
+        }
+        assert.strictEqual(await sim.isVideoRecording(device!.udid), true);
+        try {
+          // A second concurrent recording for the same device must reject rather than silently
+          // replacing the first one (see commands/video-recording.ts).
+          await assert.rejects(sim.startVideoRecording(device!.udid, outputFile), /already in progress/);
+        } finally {
+          await sim.stopVideoRecording(device!.udid);
+        }
+        assert.strictEqual(await sim.isVideoRecording(device!.udid), false);
+
+        const stats = await fs.promises.stat(outputFile);
+        assert.ok(stats.size > 0, 'expected a non-empty recorded video file');
+
+        // Nothing left running — a second stop must reject, not silently succeed.
+        await assert.rejects(sim.stopVideoRecording(device!.udid), /No video recording is in progress/);
+
+        if (await hasFfmpeg()) {
+          const codec = execFileSync('ffprobe', [
+            '-v',
+            'error',
+            '-select_streams',
+            'v:0',
+            '-show_entries',
+            'stream=codec_name',
+            '-of',
+            'default=noprint_wrappers=1:nokey=1',
+            outputFile,
+          ])
+            .toString()
+            .trim();
+          // CoreSimulator's own default (see sim_video_recording.h) — distinct from simctl's own
+          // CLI-level default of hevc, which is simctl always passing the codec key explicitly.
+          assert.strictEqual(codec, 'h264');
+        }
+
+        await fs.promises.rm(outputFile, {force: true});
+      });
+
+      it('records a video with an explicit codec, mask, and displayId', async (t) => {
+        if (!(await hasFfmpeg())) {
+          return t.skip('ffmpeg/ffprobe not installed');
+        }
+        const displays = await sim.getDisplays(device!.udid);
+        const targetDisplay = displays.find((d) => d.isMain) ?? displays[0];
+        assert.ok(targetDisplay, 'expected at least one renderable display');
+
+        const outputFile = path.join(os.tmpdir(), `coresim-video-test-hevc-${Date.now()}-${process.pid}.mp4`);
+        try {
+          await sim.startVideoRecording(device!.udid, outputFile, {
+            codec: 'hevc',
+            mask: 'black',
+            displayId: targetDisplay.id,
+          });
+        } catch (err) {
+          if (err instanceof NativeSimUnavailableError) {
+            return t.skip(`video recording unavailable on this CoreSimulator: ${err.message}`);
+          }
+          throw err;
+        }
+        await sim.stopVideoRecording(device!.udid);
+
+        const codec = execFileSync('ffprobe', [
+          '-v',
+          'error',
+          '-select_streams',
+          'v:0',
+          '-show_entries',
+          'stream=codec_name',
+          '-of',
+          'default=noprint_wrappers=1:nokey=1',
+          outputFile,
+        ])
+          .toString()
+          .trim();
+        assert.strictEqual(codec, 'hevc');
+
+        await fs.promises.rm(outputFile, {force: true});
+      });
+
+      it('streams video in real time via VideoToolbox, yielding decodable access units', async (t) => {
+        let stream: Awaited<ReturnType<typeof sim.startVideoStream>>;
+        try {
+          stream = await sim.startVideoStream(device!.udid, {fps: 10});
+        } catch (err) {
+          if (err instanceof NativeSimUnavailableError) {
+            return t.skip(`video streaming unavailable on this CoreSimulator: ${err.message}`);
+          }
+          throw err;
+        }
+
+        // Toggling appearance repaints the screen, forcing frames beyond the initial keyframe.
+        let dark = 0;
+        const wiggle = setInterval(() => {
+          dark = 1 - dark;
+          sim.setAppearance(device!.udid, dark).catch(() => {});
+        }, 150);
+
+        const controller = new AbortController();
+        const units: Array<{data: Buffer; isKeyFrame: boolean; sequence: number}> = [];
+        const timeout = setTimeout(() => controller.abort(), 15000);
+        try {
+          for await (const unit of stream.accessUnits(controller.signal)) {
+            units.push(unit);
+            if (units.length >= 2) {
+              controller.abort();
+              break;
+            }
+          }
+        } finally {
+          clearTimeout(timeout);
+          clearInterval(wiggle);
+          await stream.stop();
+          await stream.stop(); // idempotent
+        }
+
+        assert.ok(units.length > 0, 'expected at least one access unit');
+        assert.strictEqual(units[0].isKeyFrame, true, 'the first access unit must be a keyframe');
+        assert.deepStrictEqual(
+          units.map((u) => u.sequence),
+          units.map((_, i) => i),
+        );
+
+        if (await hasFfmpeg()) {
+          const raw = Buffer.concat(units.map((u) => u.data));
+          const rawPath = path.join(os.tmpdir(), `coresim-stream-test-${Date.now()}-${process.pid}.h264`);
+          await fs.promises.writeFile(rawPath, raw);
+          try {
+            const codec = execFileSync('ffprobe', [
+              '-v',
+              'error',
+              '-select_streams',
+              'v:0',
+              '-show_entries',
+              'stream=codec_name',
+              '-of',
+              'default=noprint_wrappers=1:nokey=1',
+              rawPath,
+            ])
+              .toString()
+              .trim();
+            assert.strictEqual(codec, 'h264');
+            // Decodes with no errors — validates the Annex-B framing/parameter sets are correct.
+            execFileSync('ffmpeg', ['-v', 'error', '-i', rawPath, '-f', 'null', '-']);
+          } finally {
+            await fs.promises.rm(rawPath, {force: true});
+          }
+        }
+      });
+
+      it('streams HEVC by codec option and rejects an unknown displayId synchronously', async (t) => {
+        const displays = await sim.getDisplays(device!.udid);
+        const targetDisplay = displays.find((d) => d.isMain) ?? displays[0];
+        assert.ok(targetDisplay, 'expected at least one renderable display');
+
+        let stream: Awaited<ReturnType<typeof sim.startVideoStream>>;
+        try {
+          stream = await sim.startVideoStream(device!.udid, {codec: 'hevc', displayId: targetDisplay.id, fps: 10});
+        } catch (err) {
+          if (err instanceof NativeSimUnavailableError) {
+            return t.skip(`video streaming unavailable on this CoreSimulator: ${err.message}`);
+          }
+          throw err;
+        }
+        assert.strictEqual(stream.codec, 'hevc');
+        await stream.stop();
+
+        await assert.rejects(sim.startVideoStream(device!.udid, {displayId: 'not-a-real-display-id'}));
       });
 
       if (isIOSRuntime(fixture.runtimeIdentifier)) {

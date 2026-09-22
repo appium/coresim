@@ -10,13 +10,16 @@
 
 #include <napi.h>
 
+#import <AVFoundation/AVFoundation.h>
 #import <Foundation/Foundation.h>
 
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <cstring>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -30,6 +33,8 @@
 #include "native/sim_process.h"
 #include "native/sim_screenshot.h"
 #include "native/sim_service_context.h"
+#include "native/sim_video_recording.h"
+#include "native/sim_video_stream.h"
 #include "native/tcc_privacy.h"
 #include "native/value_bridge.h"
 
@@ -189,9 +194,103 @@ struct AddonInstanceData {
   Napi::FunctionReference deviceConstructor;
   Napi::FunctionReference deviceSetConstructor;
   Napi::FunctionReference serviceContextConstructor;
+  Napi::FunctionReference videoStreamConstructor;
+  // Every VideoStreamSession currently backing a live NativeVideoStream, so the env cleanup hook
+  // below can stop them (and thus release their ThreadSafeFunctions) before Node force-tears-down
+  // this Environment's own TSFNs — see that hook for why this ordering matters.
+  std::mutex activeVideoStreamsMutex;
+  std::vector<std::shared_ptr<coresim::VideoStreamSession>> activeVideoStreams;
 };
 
+void RegisterActiveStream(Napi::Env env, const std::shared_ptr<coresim::VideoStreamSession>& session) {
+  auto* instanceData = env.GetInstanceData<AddonInstanceData>();
+  std::lock_guard<std::mutex> lock(instanceData->activeVideoStreamsMutex);
+  instanceData->activeVideoStreams.push_back(session);
+}
+
+void DeregisterActiveStream(Napi::Env env, const std::shared_ptr<coresim::VideoStreamSession>& session) {
+  auto* instanceData = env.GetInstanceData<AddonInstanceData>();
+  std::lock_guard<std::mutex> lock(instanceData->activeVideoStreamsMutex);
+  auto& streams = instanceData->activeVideoStreams;
+  streams.erase(std::remove(streams.begin(), streams.end(), session), streams.end());
+}
+
+// Stops every still-registered stream, blocking until each has fully torn down (including its own
+// onEnd_ releasing its ThreadSafeFunctions) — see the env cleanup hook this backs, in Init below,
+// for why this must run to completion before returning.
+void StopAllActiveStreams(AddonInstanceData* instanceData) {
+  std::vector<std::shared_ptr<coresim::VideoStreamSession>> streams;
+  {
+    std::lock_guard<std::mutex> lock(instanceData->activeVideoStreamsMutex);
+    streams.swap(instanceData->activeVideoStreams);
+  }
+  for (auto& session : streams) {
+    session->Stop();
+  }
+}
+
 }  // namespace
+
+// Wraps a live coresim::VideoStreamSession. Access units/errors are delivered live via the
+// callbacks passed directly to startVideoStream, not through this object — it only exposes `stop()`.
+class NativeVideoStream : public Napi::ObjectWrap<NativeVideoStream> {
+ public:
+  static void Init(Napi::Env env);
+  static Napi::Object NewInstance(Napi::Env env, std::shared_ptr<coresim::VideoStreamSession> session);
+  explicit NativeVideoStream(const Napi::CallbackInfo& info);
+
+ private:
+  std::shared_ptr<coresim::VideoStreamSession> session_;
+
+  Napi::Value Stop(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    auto session = session_;
+    return RunAsyncVoid(env, [session]() { session->Stop(); });
+  }
+
+  // Trivial in-memory flag set (see sim_video_stream.h) — no CoreSimulator dispatch, so kept
+  // synchronous like the other pure accessors in this file.
+  Napi::Value RequestKeyFrame(const Napi::CallbackInfo& info) {
+    if (session_) {
+      session_->RequestKeyFrame();
+    }
+    return info.Env().Undefined();
+  }
+
+  // Hands teardown off to a background queue instead of letting the default finalizer run
+  // ~VideoStreamSession()'s blocking Stop() synchronously on whatever thread GC runs on.
+  void Finalize(Napi::Env env) override {
+    auto session = std::move(session_);
+    if (session) {
+      DeregisterActiveStream(env, session);
+      dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        session->Stop();
+      });
+    }
+  }
+};
+
+NativeVideoStream::NativeVideoStream(const Napi::CallbackInfo& info) : Napi::ObjectWrap<NativeVideoStream>(info) {
+  auto* boxed = info[0].As<Napi::External<std::shared_ptr<coresim::VideoStreamSession>>>().Data();
+  session_ = *boxed;
+  RegisterActiveStream(info.Env(), session_);
+}
+
+void NativeVideoStream::Init(Napi::Env env) {
+  Napi::Function ctor = DefineClass(env, "NativeVideoStream",
+                                    {
+                                        InstanceMethod<&NativeVideoStream::Stop>("stop"),
+                                        InstanceMethod<&NativeVideoStream::RequestKeyFrame>("requestKeyFrame"),
+                                    });
+  env.GetInstanceData<AddonInstanceData>()->videoStreamConstructor = Napi::Persistent(ctor);
+}
+
+Napi::Object NativeVideoStream::NewInstance(Napi::Env env, std::shared_ptr<coresim::VideoStreamSession> session) {
+  auto* boxed = new std::shared_ptr<coresim::VideoStreamSession>(std::move(session));
+  Napi::Function ctor = env.GetInstanceData<AddonInstanceData>()->videoStreamConstructor.Value();
+  return ctor.New({Napi::External<std::shared_ptr<coresim::VideoStreamSession>>::New(
+      env, boxed, [](Napi::Env /*env*/, std::shared_ptr<coresim::VideoStreamSession>* data) { delete data; })});
+}
 
 class NativeDevice : public Napi::ObjectWrap<NativeDevice> {
  public:
@@ -727,6 +826,173 @@ class NativeDevice : public Napi::ObjectWrap<NativeDevice> {
         [](Napi::Env env, NSArray* result) -> Napi::Value { return NSObjectToJsValue(env, result); });
   }
 
+  // Mirrors `simctl io <udid> recordVideo` (see sim_video_recording.mm). Resolves once the first
+  // frame is recorded — see CLAUDE.md for the race hit by calling StopVideoRecording any earlier.
+  Napi::Value StartVideoRecording(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    id device = device_;
+    NSString* outputFile = @(info[0].As<Napi::String>().Utf8Value().c_str());
+    NSString* displayId = nil;
+    coresim::VideoMaskPolicy mask = coresim::VideoMaskPolicy::kIgnored;
+    NSDictionary* assetWriterOutputSettings = @{};
+    if (info.Length() > 1 && info[1].IsObject()) {
+      Napi::Object options = info[1].As<Napi::Object>();
+      if (options.Has("displayId") && options.Get("displayId").IsString()) {
+        displayId = @(options.Get("displayId").As<Napi::String>().Utf8Value().c_str());
+      }
+      if (options.Has("mask") && options.Get("mask").IsString()) {
+        std::string maskValue = options.Get("mask").As<Napi::String>().Utf8Value();
+        if (maskValue == "alpha") {
+          mask = coresim::VideoMaskPolicy::kAlpha;
+        } else if (maskValue == "black") {
+          mask = coresim::VideoMaskPolicy::kBlack;
+        }
+      }
+      if (options.Has("codec") && options.Get("codec").IsString()) {
+        std::string codecValue = options.Get("codec").As<Napi::String>().Utf8Value();
+        AVVideoCodecType codecType = codecValue == "hevc" ? AVVideoCodecTypeHEVC : AVVideoCodecTypeH264;
+        assetWriterOutputSettings = @{AVVideoCodecKey : codecType};
+      }
+    }
+    return RunAsyncVoid(env, [device, displayId, mask, assetWriterOutputSettings, outputFile]() {
+      dispatch_semaphore_t sema = dispatch_semaphore_create(0);
+      dispatch_queue_t queue = dispatch_queue_create("com.appium.coresim.recordVideo", DISPATCH_QUEUE_SERIAL);
+      __block NSError* capturedError = nil;
+      NSError* resolveError = nil;
+      BOOL ok = coresim::StartVideoRecording(
+          device, displayId, mask, assetWriterOutputSettings, outputFile, queue,
+          ^(NSError* asyncError) {
+            capturedError = asyncError;
+            dispatch_semaphore_signal(sema);
+          },
+          &resolveError);
+      ThrowIfFailed(ok, resolveError);
+      dispatch_semaphore_wait(sema, DISPATCH_TIME_FOREVER);
+      if (capturedError != nil) {
+        throw NSErrorException(capturedError);
+      }
+    });
+  }
+
+  // Stops a recording started by StartVideoRecording above. Resolves once the video file has been
+  // finalized on disk and is safe to read.
+  Napi::Value StopVideoRecording(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    id device = device_;
+    return RunAsyncVoid(env, [device]() {
+      dispatch_semaphore_t sema = dispatch_semaphore_create(0);
+      dispatch_queue_t queue = dispatch_queue_create("com.appium.coresim.stopRecordVideo", DISPATCH_QUEUE_SERIAL);
+      __block NSError* capturedError = nil;
+      NSError* resolveError = nil;
+      BOOL ok = coresim::StopVideoRecording(
+          device, queue,
+          ^(NSError* asyncError) {
+            capturedError = asyncError;
+            dispatch_semaphore_signal(sema);
+          },
+          &resolveError);
+      ThrowIfFailed(ok, resolveError);
+      dispatch_semaphore_wait(sema, DISPATCH_TIME_FOREVER);
+      if (capturedError != nil) {
+        throw NSErrorException(capturedError);
+      }
+    });
+  }
+
+  // Real-time encoding via public VideoToolbox APIs (see sim_video_stream.mm) — no private API,
+  // no file. `onAccessUnit`/`onError` are invoked live for as long as the stream runs; the
+  // returned NativeVideoStream only exposes `stop()`.
+  Napi::Value StartVideoStream(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    id device = device_;
+    NSString* displayId = nil;
+    coresim::VideoStreamCodec codec = coresim::VideoStreamCodec::kH264;
+    double fps = 15.0;
+    int bitrate = 2000000;
+    if (info.Length() > 0 && info[0].IsObject()) {
+      Napi::Object options = info[0].As<Napi::Object>();
+      if (options.Has("displayId") && options.Get("displayId").IsString()) {
+        displayId = @(options.Get("displayId").As<Napi::String>().Utf8Value().c_str());
+      }
+      if (options.Has("codec") && options.Get("codec").IsString() &&
+          options.Get("codec").As<Napi::String>().Utf8Value() == "hevc") {
+        codec = coresim::VideoStreamCodec::kHEVC;
+      }
+      if (options.Has("fps") && options.Get("fps").IsNumber()) {
+        fps = options.Get("fps").As<Napi::Number>().DoubleValue();
+      }
+      if (options.Has("bitrate") && options.Get("bitrate").IsNumber()) {
+        bitrate = options.Get("bitrate").As<Napi::Number>().Int32Value();
+      }
+    }
+    Napi::Function onAccessUnit = info[1].As<Napi::Function>();
+    Napi::Function onError = info[2].As<Napi::Function>();
+
+    // Must be constructed on the main thread, like Spawn's own exitTsfn above; released exactly
+    // once each, via onEnd (see sim_video_stream.h).
+    //
+    // accessUnitTsfn's queue is bounded, unlike every other one-shot-callback ThreadSafeFunction
+    // in this addon — a slow-draining consumer would otherwise let queued frame buffers grow
+    // unbounded; BlockingCall below naturally throttles the encoder once this fills instead.
+    static constexpr size_t kAccessUnitQueueSize = 60;
+    Napi::ThreadSafeFunction accessUnitTsfn =
+        Napi::ThreadSafeFunction::New(env, onAccessUnit, "coresim video stream access unit", kAccessUnitQueueSize, 1);
+    Napi::ThreadSafeFunction errorTsfn =
+        Napi::ThreadSafeFunction::New(env, onError, "coresim video stream error", 0, 1);
+
+    coresim::VideoStreamOptions options{codec, displayId, fps, bitrate};
+    return RunAsync<std::shared_ptr<coresim::VideoStreamSession>>(
+        env,
+        [device, options, accessUnitTsfn, errorTsfn]() mutable -> std::shared_ptr<coresim::VideoStreamSession> {
+          auto session = std::make_shared<coresim::VideoStreamSession>(
+              device, options,
+              [accessUnitTsfn](coresim::VideoAccessUnit unit) mutable {
+                accessUnitTsfn.BlockingCall([unit = std::move(unit)](Napi::Env env, Napi::Function jsCallback) mutable {
+                  // The Environment can already be mid-teardown by the time a queued callback
+                  // like this one actually runs (e.g. worker.terminate() while frames were still
+                  // piling up) — node-addon-api's own WrapVoidCallback would otherwise re-throw
+                  // whatever escapes here as a JS exception, which itself aborts the process on a
+                  // torn-down env instead of just failing to deliver a frame nothing can receive
+                  // anymore. See CLAUDE.md.
+                  try {
+                    Napi::Object obj = Napi::Object::New(env);
+                    obj.Set("data", Napi::Buffer<uint8_t>::Copy(env, unit.data.data(), unit.data.size()));
+                    obj.Set("isKeyFrame", Napi::Boolean::New(env, unit.isKeyFrame));
+                    obj.Set("sequence", Napi::Number::New(env, static_cast<double>(unit.sequence)));
+                    obj.Set("timestampMicros", Napi::Number::New(env, static_cast<double>(unit.timestampMicros)));
+                    jsCallback.Call({obj});
+                  } catch (...) {
+                  }
+                });
+              },
+              [errorTsfn](NSError* error) mutable {
+                NSErrorException exception(error);
+                errorTsfn.BlockingCall([exception](Napi::Env env, Napi::Function jsCallback) {
+                  // See accessUnitTsfn's callback above.
+                  try {
+                    jsCallback.Call({NSErrorExceptionToJsError(env, exception).Value()});
+                  } catch (...) {
+                  }
+                });
+              },
+              [accessUnitTsfn, errorTsfn]() mutable {
+                accessUnitTsfn.Release();
+                errorTsfn.Release();
+              });
+          try {
+            session->Start();
+          } catch (...) {
+            accessUnitTsfn.Release();
+            errorTsfn.Release();
+            throw;
+          }
+          return session;
+        },
+        [](Napi::Env env, std::shared_ptr<coresim::VideoStreamSession> session) -> Napi::Value {
+          return NativeVideoStream::NewInstance(env, session);
+        });
+  }
+
   // Option dictionary keys for `spawnWithPath:options:...` aren't part of the ObjC runtime
   // metadata this addon resolves selectors from (they're string literals inside CoreSimulator's
   // own implementation) — confirmed by resolving each `SimDeviceSpawnKey*` symbol at runtime via
@@ -912,6 +1178,9 @@ void NativeDevice::Init(Napi::Env env) {
                       InstanceMethod<&NativeDevice::GetWebInspectorSocket>("getWebInspectorSocket"),
                       InstanceMethod<&NativeDevice::Screenshot>("screenshot"),
                       InstanceMethod<&NativeDevice::GetDisplays>("getDisplays"),
+                      InstanceMethod<&NativeDevice::StartVideoRecording>("startVideoRecording"),
+                      InstanceMethod<&NativeDevice::StopVideoRecording>("stopVideoRecording"),
+                      InstanceMethod<&NativeDevice::StartVideoStream>("startVideoStream"),
                       InstanceMethod<&NativeDevice::Spawn>("spawn"),
                   });
   env.GetInstanceData<AddonInstanceData>()->deviceConstructor = Napi::Persistent(ctor);
@@ -1140,10 +1409,19 @@ Napi::Value FrameworkVersionBinding(const Napi::CallbackInfo& info) {
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
   // Runs once per Environment (see AddonInstanceData above) — never shared across a
   // worker_threads instance also `require()`-ing this addon.
-  env.SetInstanceData(new AddonInstanceData());
+  auto* instanceData = new AddonInstanceData();
+  env.SetInstanceData(instanceData);
+  // Node force-releases any ThreadSafeFunctions still outstanding when an Environment (e.g. a
+  // worker_threads Worker) tears down — racing our own release of the same TSFNs (fired
+  // asynchronously from NativeVideoStream::Finalize, or never, if a running stream's JS wrapper
+  // was never explicitly stopped) crashes the process. Cleanup hooks are guaranteed to run before
+  // that automatic TSFN teardown, so stopping every active stream here — synchronously, blocking
+  // until each has released its own TSFNs — establishes the ordering Node itself doesn't.
+  env.AddCleanupHook(StopAllActiveStreams, instanceData);
   NativeDevice::Init(env);
   NativeDeviceSet::Init(env);
   NativeServiceContext::Init(env);
+  NativeVideoStream::Init(env);
   exports.Set("sharedServiceContext", Napi::Function::New(env, SharedServiceContextBinding));
   exports.Set("frameworkVersion", Napi::Function::New(env, FrameworkVersionBinding));
   return exports;

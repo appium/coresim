@@ -1,6 +1,7 @@
 export {NativeSimError, NativeSimUnavailableError, NativeSimDispatchError, NativeSimOperationError} from './errors.js';
 export {NativeSimctl} from './native-simctl.js';
 export {SpawnedProcess} from './commands/spawn.js';
+export {VideoStream} from './commands/video-stream.js';
 export type {AppContainerType} from './commands/app.js';
 export type {BiometricName} from './commands/biometric.js';
 export {
@@ -20,4 +21,7 @@ export {
   type SimProcessInfo,
   type SimRuntimeInfo,
   type SpawnOptions,
+  type VideoAccessUnit,
+  type VideoRecordingOptions,
+  type VideoStreamOptions,
 } from './types.js';
