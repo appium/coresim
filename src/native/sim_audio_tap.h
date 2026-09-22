@@ -8,6 +8,17 @@
 
 namespace coresim {
 
+// Domain of every NSError AudioTapSession reports via its `onError` callback.
+extern NSString* const kAudioTapErrorDomain;
+
+// The one `onError` code that does NOT mean the session has already stopped itself: a single
+// failed attempt to refresh the tapped process list (see PollAndRefresh in sim_audio_tap.mm) —
+// the session keeps running on the stale set and retries on the next poll tick. Every other
+// `onError` code means the session tore itself down before calling it (see `onError`'s own doc
+// comment below). A caller that otherwise treats every `onError` as fatal (e.g. tearing down a
+// whole recording/stream) must special-case this one rather than reacting to it as fatal too.
+constexpr NSInteger kAudioTapNonFatalProcessListRefreshErrorCode = 9;
+
 // Captures one simulator's audio via macOS's public Core Audio "process tap" API
 // (CATapDescription + AudioHardwareCreateProcessTap, macOS 14.2+), scoped to the live set of host
 // PIDs belonging to that device's guest process tree (SpringBoard + any launched app — see
@@ -26,8 +37,14 @@ class AudioTapSession {
  public:
   // `onBuffer` delivers each IO cycle's tapped PCM, in the tap's own AudioStreamBasicDescription
   // (query via Format() after Start()) — valid only for the duration of the call (owned by
-  // CoreAudio), copy out anything needed beyond it. `onError`/`onEnd` mirror VideoFrameEncoder's
-  // contract (sim_video_stream.h/video_encoder.h).
+  // CoreAudio), copy out anything needed beyond it. If `onBuffer` itself throws (e.g. a consuming
+  // AudioEncoder::EncodePCM failing), the session catches it, reports it via `onError`, and stops
+  // itself — same as any other internal failure; `onBuffer` never needs its own try/catch, and
+  // must never call this session's own Stop() (it runs on the session's internal queue — would
+  // deadlock). `onError`/`onEnd` mirror VideoFrameEncoder's contract (sim_video_stream.h/
+  // video_encoder.h) — except `onError` can also fire for
+  // kAudioTapNonFatalProcessListRefreshErrorCode, which does NOT mean the session stopped (see
+  // its own doc comment); every other code does.
   AudioTapSession(NSString* udid, std::function<void(const AudioBufferList*, const AudioTimeStamp*)> onBuffer,
                   std::function<void(NSError*)> onError, std::function<void()> onEnd);
   ~AudioTapSession();

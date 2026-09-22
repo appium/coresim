@@ -1,6 +1,7 @@
 #include "av_stream.h"
 
 #include <atomic>
+#include <mutex>
 
 #include "audio_encoder.h"
 #include "monotonic_clock.h"
@@ -26,17 +27,31 @@ class AVStreamSession::Impl {
     running_ = true;
     try {
       audioTap_ = std::make_unique<AudioTapSession>(
-          udid_,
-          [this](const AudioBufferList* data, const AudioTimeStamp* time) {
-            if (audioEncoder_) {
-              audioEncoder_->EncodePCM(data, time);
+          udid_, [this](const AudioBufferList* data, const AudioTimeStamp* time) { HandleAudioPCM(data, time); },
+          [this](NSError* error) {
+            // A single failed process-list refresh doesn't mean the tap stopped — see this code's
+            // own doc comment (sim_audio_tap.h). Every other onError code does, and is fatal here.
+            if ([error.domain isEqualToString:kAudioTapErrorDomain] &&
+                error.code == kAudioTapNonFatalProcessListRefreshErrorCode) {
+              return;
             }
+            Fail(error, /*fromVideo=*/false);
           },
-          [this](NSError* error) { Fail(error, /*fromVideo=*/false); }, [] {});
+          [] {});
       audioTap_->Start();
-      audioEncoder_ = std::make_unique<AudioEncoder>(
+
+      // audioTap_->Start() can invoke HandleAudioPCM (on the tap's own queue) before this function
+      // returns — audioEncoder_ is written here under audioEncoderMutex_, and HandleAudioPCM reads
+      // it under the same lock, so that racing read can never observe a partially-constructed
+      // pointer; it just sees "not ready yet" and skips the buffer (see av_recording.mm's
+      // identical note for the full reasoning).
+      auto encoder = std::make_unique<AudioEncoder>(
           audioTap_->Format(), [this](CMSampleBufferRef sampleBuffer) { HandleAudioSample(sampleBuffer); },
           &clockOrigin_);
+      {
+        std::lock_guard<std::mutex> lock(audioEncoderMutex_);
+        audioEncoder_ = std::move(encoder);
+      }
 
       videoEncoder_ = std::make_unique<VideoFrameEncoder>(
           device_, videoOptions_, [this](CMSampleBufferRef sampleBuffer) { HandleVideoSample(sampleBuffer); },
@@ -58,6 +73,26 @@ class AVStreamSession::Impl {
   }
 
  private:
+  // Runs on AudioTapSession's own serial queue — audioEncoder_ is only ever read/written under
+  // audioEncoderMutex_ (see Start()'s comment). If EncodePCM throws, it's intentionally left to
+  // propagate out of here: AudioTapSession::HandleBuffer (this callback's own caller) catches it,
+  // reports it via the onError callback (-> Fail()), and safely stops itself — see
+  // sim_audio_tap.h's onBuffer doc comment for why this method must never try to stop audioTap_
+  // itself (it's running on audioTap_'s own queue — would deadlock).
+  void HandleAudioPCM(const AudioBufferList* data, const AudioTimeStamp* time) {
+    AudioEncoder* encoder;
+    {
+      std::lock_guard<std::mutex> lock(audioEncoderMutex_);
+      if (!running_) {
+        return;
+      }
+      encoder = audioEncoder_.get();
+    }
+    if (encoder != nullptr) {
+      encoder->EncodePCM(data, time);
+    }
+  }
+
   void HandleVideoSample(CMSampleBufferRef sampleBuffer) {
     if (!running_) {
       return;
@@ -151,6 +186,7 @@ class AVStreamSession::Impl {
   double clockOrigin_ = 0;
   std::unique_ptr<VideoFrameEncoder> videoEncoder_;
   std::unique_ptr<AudioTapSession> audioTap_;
+  std::mutex audioEncoderMutex_;  // guards audioEncoder_ — see HandleAudioPCM/Start()
   std::unique_ptr<AudioEncoder> audioEncoder_;
 
   std::atomic<uint64_t> videoSequence_{0};

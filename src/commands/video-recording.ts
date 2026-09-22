@@ -60,6 +60,19 @@ export async function startVideoRecording(
   outputFile: string,
   options: VideoRecordingOptions = {},
 ): Promise<void> {
+  // Mirrors startVideoStream's identical validation — both options reach the same native
+  // VideoFrameEncoder/ParseVideoEncoderOptions path (fps only with `audio` or its own presence;
+  // bitrate either way, see VideoRecordingOptions's own doc comments), which otherwise silently
+  // truncates an out-of-range value into an arbitrary 32-bit one instead of rejecting it.
+  if (options.fps !== undefined && (!Number.isFinite(options.fps) || options.fps < 1)) {
+    throw new RangeError(`fps must be a finite number >= 1, got ${options.fps}`);
+  }
+  if (
+    options.bitrate !== undefined &&
+    (!Number.isFinite(options.bitrate) || options.bitrate <= 0 || options.bitrate > 2 ** 31 - 1)
+  ) {
+    throw new RangeError(`bitrate must be a positive number no greater than ${2 ** 31 - 1}, got ${options.bitrate}`);
+  }
   const key = udid.toLowerCase();
   if (activeRecordings.has(key)) {
     throw new Error(`A video recording is already in progress for device '${udid}'`);

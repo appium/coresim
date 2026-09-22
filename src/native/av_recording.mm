@@ -53,12 +53,29 @@ class AVRecordingSession::Impl {
       if (captureAudio_) {
         audioTap_ = std::make_unique<AudioTapSession>(
             udid_, [this](const AudioBufferList* data, const AudioTimeStamp* time) { HandleAudioPCM(data, time); },
-            [this](NSError* error) { Fail(error, /*fromVideo=*/false); }, [] {});
+            [this](NSError* error) {
+              // A single failed process-list refresh doesn't mean the tap stopped — see this
+              // code's own doc comment. Every other onError code does, and is fatal here.
+              if ([error.domain isEqualToString:kAudioTapErrorDomain] &&
+                  error.code == kAudioTapNonFatalProcessListRefreshErrorCode) {
+                return;
+              }
+              Fail(error, /*fromVideo=*/false);
+            },
+            [] {});
         audioTap_->Start();
 
-        audioEncoder_ = std::make_unique<AudioEncoder>(
+        // audioTap_->Start() can invoke HandleAudioPCM (on the tap's own queue) before this
+        // function returns — audioEncoder_ is written here under mutex_, and HandleAudioPCM reads
+        // it under the same lock, so that racing read can never observe a partially-constructed
+        // pointer; it just sees "not ready yet" and skips the buffer.
+        auto encoder = std::make_unique<AudioEncoder>(
             audioTap_->Format(), [this](CMSampleBufferRef sampleBuffer) { HandleAudioSample(sampleBuffer); },
             &clockOrigin_);
+        {
+          std::lock_guard<std::mutex> lock(mutex_);
+          audioEncoder_ = std::move(encoder);
+        }
         // Audio's format is known immediately (unlike video's, learned from its first sample), so
         // its input can be added to the writer right away — well before startWriting is called.
         audioInput_ = [AVAssetWriterInput assetWriterInputWithMediaType:AVMediaTypeAudio
@@ -110,7 +127,14 @@ class AVRecordingSession::Impl {
     }
 
     // Blocks until each has fully torn down — only then is it safe to finalize the writer without
-    // racing a further HandleVideoSample/HandleAudioSample call.
+    // racing a further HandleVideoSample/HandleAudioSample call. Also the point past which no new
+    // Fail() can ever start (both encoders' onError channels are now silenced), which is what
+    // makes the stopResultReady_ check right below race-free: a Fail() concurrent with the Stop()
+    // calls above (e.g. from the audio tap's own poll timer, mid-teardown) is guaranteed to have
+    // either not started yet, or to have already fully completed — including its own
+    // [writer_ cancelWriting] — by the time these two calls return (each one's own Stop()
+    // documents blocking/draining until any in-flight callback, and thus any Fail() it triggered,
+    // has finished).
     if (videoEncoder_) {
       videoEncoder_->Stop();
     }
@@ -119,10 +143,26 @@ class AVRecordingSession::Impl {
     }
 
     bool started;
+    bool alreadyFailed;
+    NSError* failedError = nil;
     {
       std::lock_guard<std::mutex> lock(mutex_);
       started = writerStarted_;
+      alreadyFailed = stopResultReady_;
+      failedError = stopResultError_;
       ClearPendingAudioLocked();
+    }
+    if (alreadyFailed) {
+      // A concurrent Fail() already recorded the session's one true outcome (and, if the writer
+      // had started, already cancelled it) while the Stop() calls above were still draining —
+      // replay that same outcome instead of touching the writer again: it may already be
+      // `.cancelled`, and finishWritingWithCompletionHandler on that state throws an uncaught
+      // NSException that aborts the whole process.
+      if (onFinished) {
+        onFinished(failedError);
+      }
+      FireEndOnce();
+      return;
     }
     if (!started) {
       FinishStop(MakeError(2, @"No audio or video was captured before the recording was stopped"),
@@ -201,9 +241,24 @@ class AVRecordingSession::Impl {
     AppendAudioLocked(sampleBuffer);
   }
 
+  // Runs on AudioTapSession's own serial queue (see its Start() call site's comment above) —
+  // audioEncoder_ is only ever read/written under mutex_, so a racing HandleAudioPCM/Start() pair
+  // can't observe a partially-constructed pointer (see Start()'s own comment). If EncodePCM
+  // throws, it's intentionally left to propagate out of here: AudioTapSession::HandleBuffer (this
+  // callback's own caller) catches it, reports it via the onError callback below (-> Fail()), and
+  // safely stops itself — see sim_audio_tap.h's onBuffer doc comment for why this method must
+  // never try to stop audioTap_ itself (it's running on audioTap_'s own queue — would deadlock).
   void HandleAudioPCM(const AudioBufferList* data, const AudioTimeStamp* time) {
-    if (audioEncoder_) {
-      audioEncoder_->EncodePCM(data, time);
+    AudioEncoder* encoder;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (stopped_) {
+        return;
+      }
+      encoder = audioEncoder_.get();
+    }
+    if (encoder != nullptr) {
+      encoder->EncodePCM(data, time);
     }
   }
 

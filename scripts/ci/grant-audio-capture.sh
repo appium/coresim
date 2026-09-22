@@ -30,6 +30,13 @@ if [[ ! -f "$target_path" ]]; then
   exit 0
 fi
 
+# Escaped for safe interpolation into the single-quoted SQL string literal below (doubling any
+# embedded single quote — SQL's own escaping convention). target_path comes from `command -v node`
+# on whatever runner calls this script, not necessarily one of GitHub's own hosted images
+# (shared.yml only requires an arm64 macOS image), so it isn't safe to assume it's already free of
+# characters that would otherwise break out of the literal.
+escaped_path="${target_path//\'/\'\'}"
+
 seed_db() {
   local db="$1"
   if [[ ! -f "$db" ]]; then
@@ -40,7 +47,7 @@ INSERT OR REPLACE INTO access
   (service, client, client_type, auth_value, auth_reason, auth_version,
    indirect_object_identifier, flags, last_modified)
 VALUES
-  ('kTCCServiceAudioCapture', '${target_path}', 1, 2, 3, 1,
+  ('kTCCServiceAudioCapture', '${escaped_path}', 1, 2, 3, 1,
    'UNUSED', 0, CAST(strftime('%s', 'now') AS INTEGER));
 SQL
 }
