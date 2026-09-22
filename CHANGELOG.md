@@ -1,3 +1,9 @@
+## [1.5.0](https://github.com/appium/coresim/compare/v1.4.0...v1.5.0) (2026-09-22)
+
+### Features
+
+* Add video recording API ([#17](https://github.com/appium/coresim/issues/17)) ([d399403](https://github.com/appium/coresim/commit/d399403c1d329f303ab51726fa382313cf09ad0f))
+
 ## [1.4.0](https://github.com/appium/coresim/compare/v1.3.0...v1.4.0) (2026-09-19)
 
 ### Features
