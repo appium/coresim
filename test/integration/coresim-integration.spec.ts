@@ -60,25 +60,36 @@ function isIOSRuntime(runtimeIdentifier: string): boolean {
  * audio HAL — right after boot this can transiently be empty. Polls `fn` via waitForCondition
  * instead of treating that as a hard failure; any other error passes through immediately for the
  * caller's own isAudioCaptureUnavailable()/t.skip() handling.
+ *
+ * If the whole wait budget is spent still seeing that error, waitForCondition would otherwise
+ * throw its own generic timeout Error — losing the real NativeSimOperationError and turning what
+ * should be a graceful isAudioCaptureUnavailable()/t.skip() into a hard test failure. The last
+ * real error is tracked and re-thrown instead.
  */
 async function retryUntilAudioProcessesFound<T>(fn: () => Promise<T>): Promise<T> {
   let result: T | undefined;
-  await waitForCondition(
-    async () => {
-      try {
-        result = await fn();
-        return true;
-      } catch (err) {
-        const noProcessesYet =
-          err instanceof NativeSimOperationError && err.domain === 'com.appium.coresim.AudioTap' && err.code === 2;
-        if (!noProcessesYet) {
-          throw err;
+  let lastError: unknown;
+  try {
+    await waitForCondition(
+      async () => {
+        try {
+          result = await fn();
+          return true;
+        } catch (err) {
+          const noProcessesYet =
+            err instanceof NativeSimOperationError && err.domain === 'com.appium.coresim.AudioTap' && err.code === 2;
+          if (!noProcessesYet) {
+            throw err;
+          }
+          lastError = err;
+          return false;
         }
-        return false;
-      }
-    },
-    {waitMs: 20000, intervalMs: 1000, error: 'expected a guest process to eventually register with CoreAudio'},
-  );
+      },
+      {waitMs: 20000, intervalMs: 1000},
+    );
+  } catch (err) {
+    throw lastError ?? err;
+  }
   return result as T;
 }
 
@@ -251,8 +262,9 @@ describe('NativeSimctl integration', () => {
         // (see CLAUDE.md), and unlike getEnv() (a plain host-filesystem read), not every endpoint
         // is necessarily as graceful about running against a not-yet-fully-settled simulator.
         // Waiting here, once, up front means every check below runs against a genuinely booted
-        // device instead of each one having to reason about this itself.
-        await sim.waitForBoot(device.udid);
+        // device instead of each one having to reason about this itself. The library's own default
+        // (240s) isn't always enough on a loaded CI runner — observed exceeded for iOS 26.5 in CI.
+        await sim.waitForBoot(device.udid, IS_CI ? {timeoutMs: 480_000} : undefined);
       });
 
       after(async () => {
