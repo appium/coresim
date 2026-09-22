@@ -54,6 +54,9 @@ await sim.deleteDevice(device.udid);
   readiness with `getBootStatus()`/`waitForBoot()`.
 - **Apps** — install, remove, launch, terminate, and inspect apps.
 - **Processes** — spawn a process on the simulator and stream its stdout/stderr live.
+- **Screen capture** — screenshots, video recording to a file, and a real-time encoded video
+  stream — optionally with the device's own audio, muxed into the recording or interleaved into
+  the stream.
 - **Simulator settings** — appearance (light/dark), accessibility (increase contrast, content
   size), location, and permissions.
 - **Extras** — keychain certificates, push notifications, and Darwin notifications.
