@@ -1131,7 +1131,9 @@ class NativeDevice : public Napi::ObjectWrap<NativeDevice> {
   static coresim::JpegStreamOptions ParseJpegStreamOptions(const Napi::CallbackInfo& info, size_t argIndex) {
     NSString* displayId = nil;
     double fps = 60.0;
-    NSNumber* jpegQualityPercent = nil;
+    // Defaults to 80, not ImageIO's own (near-lossless, much larger) default — see
+    // JpegStreamOptions's own comment (sim_jpeg_stream.h) for why.
+    NSNumber* jpegQualityPercent = @80;
     double scale = 1.0;
     if (info.Length() > argIndex && info[argIndex].IsObject()) {
       Napi::Object options = info[argIndex].As<Napi::Object>();

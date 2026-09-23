@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 
 #include "monotonic_clock.h"
 #include "nserror_bridge.h"
@@ -15,6 +16,16 @@ namespace coresim {
 namespace {
 
 NSString* const kJpegStreamErrorDomain = @"io.appium.coresim.JpegStream";
+
+// A scale this close to 1.0 (from a 1-100 percent option divided by 100.0 — never exactly 1.0
+// except at 100%) is treated as "no scaling" — comparing doubles for exact equality is unreliable.
+constexpr double kScaleEpsilon = 1e-9;
+
+// If no frame can be produced for this long — the display surface staying unavailable, or the
+// CIImage/CGImage render failing — for that whole stretch, something is genuinely wrong (a
+// permanently dropped connection, say) rather than a one-off transient hiccup; escalate to a real
+// error instead of polling forever with nothing to show for it and no error ever reported.
+constexpr double kMaxStallSeconds = 10.0;
 
 NSError* MakeError(NSInteger code, NSString* message) {
   return [NSError errorWithDomain:kJpegStreamErrorDomain code:code userInfo:@{NSLocalizedDescriptionKey : message}];
@@ -94,8 +105,11 @@ class JpegStreamSession::Impl {
     }
     if (timer_ != nullptr) {
       dispatch_source_cancel(timer_);
-      // Blocks until any in-flight Tick() finishes — by then running_ is already false, so it
-      // won't emit another frame.
+      // dispatch_source_cancel doesn't preempt a currently-executing handler — an already-running
+      // Tick() (past its own `running_` check) can still run to completion and emit one last frame
+      // via onFrame_ before this returns. This blocks until that happens, so onEnd_ below (which
+      // the caller uses to release resources onFrame_ needs, e.g. a ThreadSafeFunction) never races
+      // a still-in-flight emit — not, as such, a guarantee that no further frame is ever emitted.
       dispatch_sync(queue_, ^{
                     });
       timer_ = nullptr;
@@ -147,12 +161,16 @@ class JpegStreamSession::Impl {
         }
         id surfaceObj = CurrentDisplaySurface(descriptor);
         if (surfaceObj == nil) {
-          return;  // transient — the connection may not have a frame ready yet, try again next tick
+          ReportIfStalledTooLong();  // transient — the connection may not have a frame ready yet
+          return;
         }
         IOSurfaceRef surface = (__bridge IOSurfaceRef)surfaceObj;
         uint32_t seed = IOSurfaceGetSeed(surface);
         if (seed == lastSeed_) {
-          return;  // unchanged since the last tick — mirrors VideoFrameEncoder's own seed check
+          // Unchanged since the last tick (mirrors VideoFrameEncoder's own seed check) — the
+          // surface itself is fine, just nothing new to encode, so this resolves any stall.
+          stalledSince_ = 0;
+          return;
         }
         NSData* data = nil;
         NSError* encodeError = nil;
@@ -168,8 +186,11 @@ class JpegStreamSession::Impl {
           return;
         }
         if (encoded) {
+          stalledSince_ = 0;
           lastSeed_ = seed;
           EmitFrame(data);
+        } else {
+          ReportIfStalledTooLong();  // transient — e.g. a momentary CIImage/CGImage render failure
         }
       } catch (const std::exception& e) {
         // Without this, an exception here (e.g. a dropped display-proxy connection, which surfaces
@@ -184,6 +205,26 @@ class JpegStreamSession::Impl {
     }
   }
 
+  // Called from Tick() on a tick that produced nothing but also wasn't a genuine (reported) error —
+  // starts a stall timer on the first such tick, and escalates to a real onError_/StopFromQueue()
+  // once it's run past kMaxStallSeconds without a single successful tick (a frame, or an unchanged-
+  // seed check) in between. Without this, a display surface that never comes back (or a
+  // CIImage/CGImage render that never succeeds again) would poll forever with nothing to show for
+  // it and no error ever reported (see CLAUDE.md).
+  void ReportIfStalledTooLong() {
+    double now = MonotonicSeconds();
+    if (stalledSince_ == 0) {
+      stalledSince_ = now;
+      return;
+    }
+    if (now - stalledSince_ > kMaxStallSeconds) {
+      if (onError_) {
+        onError_(MakeError(5, @"No JPEG frame could be produced for too long"));
+      }
+      StopFromQueue();
+    }
+  }
+
   // Returns whether a frame was produced. Sets *error only for a genuine encode failure that
   // should end the whole session; a false return with *error left nil means "transient, retry
   // next tick" (mirrors VideoFrameEncoder::EncodeSurface's identical CVPixelBufferCreateWithIOSurface
@@ -193,10 +234,10 @@ class JpegStreamSession::Impl {
     if (ciImage == nil) {
       return false;
     }
-    // Scaling the CIImage before rendering (rather than resizing the already-encoded JPEG
-    // afterward, the way e.g. WebDriverAgent's own scaling does) means the CGImage/JPEG below is
-    // produced at the target resolution directly — no extra decode/resize/re-encode round trip.
-    if (options_.scale != 1.0) {
+    // Scaling the CIImage before rendering (rather than resizing an already-encoded JPEG
+    // afterward) means the CGImage/JPEG below is produced at the target resolution directly — no
+    // extra decode/resize/re-encode round trip.
+    if (std::fabs(options_.scale - 1.0) > kScaleEpsilon) {
       ciImage = [ciImage imageByApplyingTransform:CGAffineTransformMakeScale(options_.scale, options_.scale)];
     }
     CGImageRef cgImage = [context_ createCGImage:ciImage fromRect:ciImage.extent];
@@ -213,9 +254,11 @@ class JpegStreamSession::Impl {
     return true;
   }
 
-  // Only ever called from `queue_` (Start()'s initial encode, or Tick()) — never concurrently, so
-  // sequence_ needs no synchronization, unlike VideoStreamSession's (whose encoder callback can
-  // run on a different thread).
+  // Called either from Start() (on whichever thread calls it, before the timer/queue_ even starts
+  // running) or from Tick() (already serialized on queue_, once the timer is live) — never both at
+  // once, since Start() always finishes (and only then resumes the timer) before Tick() can fire.
+  // So sequence_ needs no synchronization, unlike VideoStreamSession's (whose encoder callback can
+  // run concurrently with the poll loop on a different thread).
   void EmitFrame(NSData* data) {
     JpegFrame frame;
     frame.sequence = sequence_++;
@@ -240,6 +283,10 @@ class JpegStreamSession::Impl {
   uint32_t lastSeed_ = 0;
   double startTime_ = 0;
   uint64_t sequence_ = 0;
+  // 0 means "no stall in progress" — set to MonotonicSeconds() by ReportIfStalledTooLong() on the
+  // first unproductive tick of a run, cleared back to 0 by any tick that makes real progress
+  // (a produced frame, or an unchanged-seed check confirming the surface itself is still fine).
+  double stalledSince_ = 0;
   std::atomic<bool> running_{false};
 };
 

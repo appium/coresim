@@ -12,9 +12,11 @@ namespace coresim {
 struct JpegStreamOptions {
   NSString* displayId = nil;
   double fps = 60.0;
-  // 0-100 percent; nil for ImageIO's own default (near-lossless) — same semantics as
-  // CaptureScreenshot's jpegQualityPercent (sim_screenshot.h).
-  NSNumber* jpegQualityPercent = nil;
+  // 0-100 percent; same semantics as CaptureScreenshot's jpegQualityPercent (sim_screenshot.h),
+  // nil-able for ImageIO's own default (near-lossless, so a much larger frame) — but defaulted to
+  // 80 by coresim.mm rather than left nil, since a continuous live stream should default to
+  // noticeably smaller frames, unlike a one-off CaptureScreenshot call.
+  NSNumber* jpegQualityPercent = @80;
   // 0.0-1.0 fraction of the original frame's width/height; 1.0 (default) performs no scaling.
   // Already normalized from the JS-facing 1-100 percent option by coresim.mm.
   double scale = 1.0;

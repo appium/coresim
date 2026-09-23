@@ -218,7 +218,8 @@ export interface JpegStreamOptions {
   fps?: number;
   /**
    * JPEG quality as a percentage (0 = smallest/most compressed, 100 = largest/least compressed).
-   * Defaults to ImageIO's own default (near-lossless) when omitted.
+   * Defaults to 80 — noticeably smaller than {@link ScreenshotOptions.quality}'s own (near-
+   * lossless) default, more suitable for a continuous live stream than a one-off screenshot.
    */
   quality?: number;
   /**
