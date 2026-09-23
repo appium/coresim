@@ -169,6 +169,17 @@ export interface VideoRecordingOptions {
   bitrate?: number;
 }
 
+/** Options for `NativeSimctl.stopVideoRecording`. */
+export interface StopVideoRecordingOptions {
+  /**
+   * Best-effort: still attempts the native stop, but releases this device's tracked-active-
+   * recording bookkeeping regardless of whether that attempt succeeds, instead of leaving it
+   * retryable — see the doc comment above `NativeSimctl.stopVideoRecording` for when a caller
+   * needs this over a plain retry.
+   */
+  force?: boolean;
+}
+
 /** Options for `NativeSimctl.startVideoStream`. */
 export interface VideoStreamOptions {
   /**
