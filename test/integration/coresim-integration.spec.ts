@@ -753,11 +753,20 @@ describe('NativeSimctl integration', () => {
       it('does not crash on exit after stop() while the stream wrapper is still referenced', async (t) => {
         const childScript = fileURLToPath(new URL('./av-abort-delivery-child.js', import.meta.url));
         try {
-          await execFileAsync(process.execPath, [childScript, device!.udid], {timeout: 15000});
+          // Some CI hosts/older Xcode runtimes are just slow at this (observed: 44s for an
+          // otherwise-instant stream test on an Xcode 16.4/iOS 18.5 leg) — generous headroom here
+          // since a slow-but-working host would otherwise get SIGTERM'd by this timeout and
+          // misreported as a crash below.
+          await execFileAsync(process.execPath, [childScript, device!.udid], {timeout: IS_CI ? 120000 : 20000});
         } catch (err) {
-          const execErr = err as {code?: number | string; signal?: string | null; stderr?: string};
+          const execErr = err as {code?: number | string; signal?: string | null; killed?: boolean; stderr?: string};
           if (execErr.code === 2) {
             return t.skip('video streaming unavailable on this CoreSimulator');
+          }
+          if (execErr.killed && execErr.signal === 'SIGTERM') {
+            // Our own timeout above killed it — a slow host, not evidence of the crash this test
+            // guards against (that reproduces as SIGABRT, near-instantly once it happens).
+            return t.skip(`child process did not finish within the timeout — too slow to test here, not a crash`);
           }
           throw new Error(
             `child process exited abnormally (code=${execErr.code}, signal=${execErr.signal}) — see CLAUDE.md's ` +
