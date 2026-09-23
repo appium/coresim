@@ -2,10 +2,9 @@ import {EventEmitter} from 'node:events';
 
 import {logger} from '@appium/support';
 
-import {wrapNativeError} from '../errors.js';
 import type {NativeSimctl} from '../native-simctl.js';
 import type {NativeVideoStreamHandle, VideoAccessUnit, VideoStreamOptions} from '../types.js';
-import {runCatchingAsync} from '../utils/index.js';
+import {runCatchingAsync, toTypedError} from '../utils/index.js';
 
 declare module '../native-simctl.js' {
   interface NativeSimctl {
@@ -20,19 +19,10 @@ const log = logger.getLogger('CoreSim');
 // backpressure: _handleAccessUnit's emit-equivalent push always returns immediately, regardless of
 // how slow the actual accessUnits() consumer is, so without a bound of its own this queue could
 // otherwise grow without limit while a slow consumer falls behind.
-const MAX_BUFFERED_UNITS = 60;
+export const MAX_BUFFERED_UNITS = 60;
 
 const SINGLE_CONSUMER_ERROR =
   'VideoStream.accessUnits() supports only one active consumer at a time — a second concurrent call rejects.';
-
-/** `wrapNativeError` always throws — this just gets its thrown value back as a plain return, to emit rather than raise it. */
-function toTypedError(err: unknown): Error {
-  try {
-    wrapNativeError(err);
-  } catch (wrapped) {
-    return wrapped as Error;
-  }
-}
 
 /**
  * Single-consumer FIFO between native's per-frame callback and `accessUnits()`. Unlike routing
@@ -40,35 +30,46 @@ function toTypedError(err: unknown): Error {
  * (fixing the encoder's own first-frame/keyframe otherwise being lost to a startup race) rather
  * than silently dropped.
  *
- * Bounded at `MAX_BUFFERED_UNITS`, but codec-aware about *how* it sheds load once a slow consumer
- * falls behind: since frames only reference earlier frames they were encoded against (no
- * `AllowFrameReordering`), dropping an arbitrary interframe would orphan every later one from its
+ * Bounded at `MAX_BUFFERED_UNITS`, but resync-aware about *how* it sheds load once a slow consumer
+ * falls behind: since interframes only reference earlier frames they were encoded against (no
+ * `AllowFrameReordering`), dropping an arbitrary one would orphan every later one from its
  * reference chain, corrupting decode from that point on even though delivery looks unbroken.
- * Overflow instead clears the backlog entirely and enters a resync state, discarding every
- * further interframe (not buffering them) until the next keyframe — self-decodable on its own —
- * lets delivery resume cleanly.
+ * Overflow instead clears the backlog entirely and enters a resync state — `dropsDuringResync`
+ * decides which further units to discard (not buffer) until `endsResync` sees a self-decodable
+ * point to resume clean delivery from. Generic (not hardcoded to video's own reference-chain
+ * concern) so `VideoStream` can reuse this same machinery when it's carrying interleaved audio
+ * too (`VideoStreamOptions.audio`) — an audio unit is always independently decodable, so it's
+ * configured to never be dropped and never itself end a resync; only video interframes are.
  */
-class AccessUnitQueue {
-  private readonly buffer: VideoAccessUnit[] = [];
-  private waiter:
-    | {resolve: (result: IteratorResult<VideoAccessUnit>) => void; reject: (err: unknown) => void}
-    | undefined;
+export class AccessUnitQueue<T> {
+  private readonly buffer: T[] = [];
+  private waiter: {resolve: (result: IteratorResult<T>) => void; reject: (err: unknown) => void} | undefined;
   private ended = false;
   private error: unknown;
   private resyncing = false;
 
-  /** @param onOverflow — called once when overflow first forces a resync, e.g. to request a fresh keyframe. */
-  constructor(private readonly onOverflow?: () => void) {}
+  constructor(
+    private readonly opts: {
+      /** Whether `unit` should be discarded (not buffered) while resyncing. */
+      dropsDuringResync: (unit: T) => boolean;
+      /** Whether `unit` is a self-decodable point resync can resume clean delivery from. */
+      endsResync: (unit: T) => boolean;
+      /** Called once when overflow first forces a resync, e.g. to request a fresh keyframe. */
+      onOverflow?: () => void;
+    },
+  ) {}
 
-  push(unit: VideoAccessUnit): void {
+  push(unit: T): void {
     if (this.ended) {
       return;
     }
     if (this.resyncing) {
-      if (!unit.isKeyFrame) {
+      if (this.opts.dropsDuringResync(unit)) {
         return; // still waiting for a self-decodable point to resume delivery from
       }
-      this.resyncing = false;
+      if (this.opts.endsResync(unit)) {
+        this.resyncing = false;
+      }
     }
     if (this.waiter) {
       const {resolve} = this.waiter;
@@ -80,7 +81,7 @@ class AccessUnitQueue {
     if (this.buffer.length > MAX_BUFFERED_UNITS) {
       this.buffer.length = 0;
       this.resyncing = true;
-      this.onOverflow?.();
+      this.opts.onOverflow?.();
     }
   }
 
@@ -119,7 +120,7 @@ class AccessUnitQueue {
    * queue never hands out a stale buffered unit — an aborted consumer, or a fresh iterator started
    * after `stop()`, must see the boundary immediately rather than draining leftovers first.
    */
-  next(signal: AbortSignal): Promise<IteratorResult<VideoAccessUnit>> {
+  next(signal: AbortSignal): Promise<IteratorResult<T>> {
     if (signal.aborted) {
       return Promise.resolve({value: undefined, done: true});
     }
@@ -151,8 +152,9 @@ class AccessUnitQueue {
 }
 
 /**
- * A live video stream from `NativeSimctl.startVideoStream` — encodes the device's display in real
- * time via VideoToolbox, unlike `startVideoRecording`, which drives CoreSimulator's own private,
+ * A live video stream from `NativeSimctl.startVideoStream` — encodes the device's display (and,
+ * with `options.audio`, its audio too — see {@link VideoStreamOptions}) in real time via
+ * VideoToolbox/Core Audio, unlike `startVideoRecording`, which drives CoreSimulator's own private,
  * file-only recorder. Mirrors `appium-ios-remotexpc`'s `ScreenStreamCapture` shape
  * (`accessUnits()`/`stop()`) for API consistency; the transport is otherwise unrelated.
  */
@@ -162,8 +164,14 @@ export class VideoStream extends EventEmitter {
   private stopPromise: Promise<void> | undefined;
   // Requests a fresh keyframe on resync so delivery can resume immediately rather than waiting
   // for the next periodic one — `handle` may not be attached yet on a startup-time overflow
-  // (vanishingly unlikely given MAX_BUFFERED_UNITS), in which case this is just a no-op.
-  private readonly queue = new AccessUnitQueue(() => this.handle?.requestKeyFrame());
+  // (vanishingly unlikely given MAX_BUFFERED_UNITS), in which case this is just a no-op. Only a
+  // video keyframe ends/is exempt from resync — an audio unit (when present) is always
+  // independently decodable, so it's never dropped and never itself ends a resync.
+  private readonly queue = new AccessUnitQueue<VideoAccessUnit>({
+    dropsDuringResync: (unit) => unit.track === 'video' && !unit.isKeyFrame,
+    endsResync: (unit) => unit.track === 'video' && unit.isKeyFrame,
+    onOverflow: () => this.handle?.requestKeyFrame(),
+  });
   private activeConsumers = 0;
 
   /** @internal */
@@ -236,13 +244,14 @@ export class VideoStream extends EventEmitter {
 }
 
 /**
- * Starts encoding the device's display in real time. Resolves once the encoder has actually
- * started; the returned {@link VideoStream}'s `accessUnits()` then yields each frame as it
- * arrives. Independent of `startVideoRecording`/`stopVideoRecording` — both, and any number of
- * concurrent streams, can run on the same device at once.
+ * Starts encoding the device's display (and, with `options.audio`, its audio) in real time.
+ * Resolves once the encoder(s) have actually started; the returned {@link VideoStream}'s
+ * `accessUnits()` then yields each unit as it arrives. Independent of
+ * `startVideoRecording`/`stopVideoRecording` — both, and any number of concurrent streams, can
+ * run on the same device at once.
  *
  * @param udid — UDID of the device to stream; must be booted
- * @param options — `displayId`, `codec`, `fps`, `bitrate` — see {@link VideoStreamOptions}
+ * @param options — `displayId`, `codec`, `fps`, `bitrate`, `audio` — see {@link VideoStreamOptions}
  */
 export async function startVideoStream(
   this: NativeSimctl,

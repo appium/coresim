@@ -5,7 +5,7 @@ import {VideoStream} from '../../src/index.js';
 import type {VideoAccessUnit} from '../../src/index.js';
 
 function fakeUnit(sequence: number, isKeyFrame = sequence === 0): VideoAccessUnit {
-  return {data: Buffer.from([sequence]), isKeyFrame, sequence, timestampMicros: sequence * 1000};
+  return {track: 'video', data: Buffer.from([sequence]), isKeyFrame, sequence, timestampMicros: sequence * 1000};
 }
 
 /**

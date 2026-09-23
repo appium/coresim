@@ -281,7 +281,18 @@ const loadNative = util.memoize(function loadNative(): NativeCoreSimModule {
       'n/a',
     );
   }
-  return require('node-gyp-build')(getPkgRoot()) as NativeCoreSimModule;
+  const native = require('node-gyp-build')(getPkgRoot()) as NativeCoreSimModule;
+  // A forgotten (never explicitly stopped) AV recording/stream otherwise silently loses data —
+  // or just leaks a live encoder — the instant a caller force-exits via `process.exit()`, since
+  // Node's own cleanup hooks (coresim.mm's CleanupActiveSessions, registered against the exact
+  // same condition) are confirmed to NOT run in that path, only on a natural empty-event-loop
+  // exit or a Worker's own termination. `process.on('exit', ...)` does fire for `process.exit()`
+  // too, and (per Node's own contract) may run synchronous code — flushActiveSessions() qualifies:
+  // it's a single blocking native call, not new async JS work. Registered once, lazily, here
+  // rather than at module import time, so merely importing this package on a non-macOS platform
+  // never touches `process` for something it'll never need.
+  process.on('exit', () => native.flushActiveSessions());
+  return native;
 });
 
 const DEFAULT_DEVELOPER_DIR_TIMEOUT_MS = 15_000;

@@ -140,9 +140,33 @@ export interface VideoRecordingOptions {
   /**
    * For a non-rectangular display (e.g. a Dynamic Island cutout): `'ignored'` (default) saves the
    * unmasked framebuffer, `'black'` renders the mask black, `'alpha'` is not supported and
-   * behaves like `'black'`.
+   * behaves like `'black'`. Only applies when neither `audio` nor `fps` is set — see their doc
+   * comments.
    */
   mask?: 'ignored' | 'alpha' | 'black';
+  /**
+   * Also capture the device's audio into the same file, muxed as a second track. Defaults to
+   * `false`. Requires macOS 14.2+ (Core Audio process taps), the host's "System Audio Recording
+   * Only" privacy permission (System Settings > Privacy & Security — cannot be granted
+   * programmatically; a denial isn't a thrown error, it surfaces as a silent, audio-less/near-
+   * silent recording), a default audio output device on the host, and a booted device that has
+   * produced audio at least once. See the README's "Screen capture" section for the full
+   * requirements list and known failure modes.
+   *
+   * Like an explicit `fps`, this switches the implementation to this addon's own VideoToolbox +
+   * Core Audio encoders instead of CoreSimulator's private recorder, which can't mux audio.
+   */
+  audio?: boolean;
+  /**
+   * Max frames/sec to poll the framebuffer at — see {@link VideoStreamOptions} `fps` for the
+   * identical semantics. Meaningless against CoreSimulator's private recorder (it captures on its
+   * own cadence, not one we poll), so setting `fps` — even without `audio` — switches this
+   * recording to the same own-encoder implementation `audio` does. That switch costs `mask`
+   * support, which only the private recorder implements.
+   */
+  fps?: number;
+  /** Target average bitrate, in bits/sec. Respected on either implementation. */
+  bitrate?: number;
 }
 
 /** Options for `NativeSimctl.startVideoStream`. */
@@ -161,18 +185,30 @@ export interface VideoStreamOptions {
   fps?: number;
   /** Target average bitrate, in bits/sec. Defaults to 2,000,000 (2 Mbps). */
   bitrate?: number;
+  /**
+   * Also stream the device's audio, interleaved into the same `accessUnits()` sequence. Defaults
+   * to `false`. Same requirements and failure modes as {@link VideoRecordingOptions.audio} — see
+   * its doc comment and the README's "Screen capture" section.
+   */
+  audio?: boolean;
 }
 
 /**
- * One encoded frame from `VideoStream.accessUnits()` — Annex-B NAL units. A keyframe's `data` has
- * parameter sets (SPS/PPS, or VPS/SPS/PPS for HEVC) prepended, so it's self-decodable alone.
+ * One encoded unit from `VideoStream.accessUnits()`, discriminated by `track`: a video unit
+ * (Annex-B NAL units — a keyframe's `data` has parameter sets, SPS/PPS or VPS/SPS/PPS for HEVC,
+ * prepended, so it's self-decodable alone) or, when {@link VideoStreamOptions.audio} was set, an
+ * interleaved audio unit (an ADTS-framed AAC-LC packet — the 7-byte ADTS header carries sample
+ * rate/channel count itself, so no separate decoder-config exchange is needed; always
+ * independently decodable, so `isKeyFrame` is always `true`). Without `audio`, every unit has
+ * `track: 'video'`.
  */
 export interface VideoAccessUnit {
+  track: 'video' | 'audio';
   data: Buffer;
   isKeyFrame: boolean;
-  /** Monotonically increasing per stream, starting at 0. */
+  /** Monotonically increasing per track, starting at 0 — independent between `'video'` and `'audio'`. */
   sequence: number;
-  /** Microseconds since the stream started. */
+  /** Microseconds since the stream started, on one shared clock across both tracks. */
   timestampMicros: number;
 }
 
@@ -280,6 +316,7 @@ export type NativeSpawnExitCallback = (code: number | null, signal: number | nul
 
 /** Raw shape of an access unit as the native addon delivers it — see {@link VideoAccessUnit}. */
 export interface NativeVideoAccessUnit {
+  track: 'video' | 'audio';
   data: Buffer;
   isKeyFrame: boolean;
   sequence: number;
@@ -289,11 +326,27 @@ export interface NativeVideoAccessUnit {
 export type NativeVideoAccessUnitCallback = (unit: NativeVideoAccessUnit) => void;
 export type NativeVideoErrorCallback = (err: Error) => void;
 
-/** A live encoder session, wrapped by `coresim.mm`'s `NativeVideoStream` — what `NativeDeviceHandle.startVideoStream()` resolves to. */
+/**
+ * A live encoder session, wrapped by `coresim.mm`'s `NativeVideoStream` (video only) or
+ * `NativeAVStream` (`audio: true` — see {@link VideoStreamOptions}) — either way, what
+ * `NativeDeviceHandle.startVideoStream()` resolves to; the two native wrapper classes expose the
+ * identical shape below, so callers never need to know which one they got.
+ */
 export interface NativeVideoStreamHandle {
   stop(): Promise<void>;
-  /** Forces the next encoded frame to be a keyframe — trivial in-memory flag, so synchronous. */
+  /** Forces the next encoded video frame to be a keyframe — trivial in-memory flag, so synchronous. */
   requestKeyFrame(): void;
+}
+
+/**
+ * A live recording, wrapped by `coresim.mm`'s `NativePrivateRecordingHandle` (video only,
+ * addressing CoreSimulator's own internally-tracked private recorder) or `NativeAVRecording`
+ * (`audio: true` — see {@link VideoRecordingOptions}, a real local resource with no server-side
+ * counterpart) — either way, what `NativeDeviceHandle.startVideoRecording()` resolves to.
+ */
+export interface NativeVideoRecordingHandle {
+  /** Resolves once the output file has been finalized on disk and is safe to read. */
+  stop(): Promise<void>;
 }
 
 /** A `SimDevice`, wrapped by `coresim.mm`'s `NativeDevice` — what `NativeSimctl`'s `_findDevice()` resolves to. */
@@ -344,13 +397,26 @@ export interface NativeDeviceHandle {
   getWebInspectorSocket(): Promise<string>;
   screenshot(options?: {format?: 'png' | 'jpeg'; displayId?: string; quality?: number}): Promise<Buffer>;
   getDisplays(): Promise<SimDisplayInfo[]>;
+  // `mask` only applies without `audio`/`fps`; `bitrate` applies either way — see
+  // VideoRecordingOptions's own doc comments for why. `onError` is only ever invoked on the
+  // `audio`/`fps` (own-encoder) path — a live mid-recording failure, which the private recorder
+  // has no channel to report.
   startVideoRecording(
     outputFile: string,
-    options?: {displayId?: string; codec?: 'h264' | 'hevc'; mask?: 'ignored' | 'alpha' | 'black'},
-  ): Promise<void>;
-  stopVideoRecording(): Promise<void>;
+    options:
+      | {
+          displayId?: string;
+          codec?: 'h264' | 'hevc';
+          mask?: 'ignored' | 'alpha' | 'black';
+          audio?: boolean;
+          fps?: number;
+          bitrate?: number;
+        }
+      | undefined,
+    onError: NativeVideoErrorCallback,
+  ): Promise<NativeVideoRecordingHandle>;
   startVideoStream(
-    options: {displayId?: string; codec?: 'h264' | 'hevc'; fps?: number; bitrate?: number} | undefined,
+    options: {displayId?: string; codec?: 'h264' | 'hevc'; fps?: number; bitrate?: number; audio?: boolean} | undefined,
     onAccessUnit: NativeVideoAccessUnitCallback,
     onError: NativeVideoErrorCallback,
   ): Promise<NativeVideoStreamHandle>;
@@ -376,4 +442,11 @@ export interface NativeServiceContextHandle {
 export interface NativeCoreSimModule {
   sharedServiceContext(developerDir: string): Promise<NativeServiceContextHandle>;
   frameworkVersion(): Promise<string>;
+  /**
+   * Synchronously (not a Promise) stops every still-live video/AV stream or AV recording, blocking
+   * until each has released its resources. Meant to be called from a `process.on('exit', ...)`
+   * listener (see native-simctl.ts) — cleanup hooks alone don't run under `process.exit()` on the
+   * main process/thread, only on a natural empty-event-loop exit or a Worker's own termination.
+   */
+  flushActiveSessions(): void;
 }

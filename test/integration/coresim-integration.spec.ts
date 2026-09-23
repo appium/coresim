@@ -1,11 +1,13 @@
 import assert from 'node:assert';
-import {execFileSync} from 'node:child_process';
+import {execFile} from 'node:child_process';
 import {once} from 'node:events';
 import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import {after, before, describe, it} from 'node:test';
+import {fileURLToPath} from 'node:url';
+import {promisify} from 'node:util';
 
 import {waitForCondition} from 'asyncbox';
 
@@ -25,6 +27,8 @@ import {
   hasFfmpeg,
   UICATALOG_BUNDLE_ID,
 } from '../fixtures.js';
+
+const execFileAsync = promisify(execFile);
 
 const IS_CI = Boolean(process.env.CI);
 // This suite otherwise shares a single boot cycle per Xcode version (see integration-test.yml) —
@@ -53,6 +57,57 @@ function isIOSRuntime(runtimeIdentifier: string): boolean {
 }
 
 /**
+ * The Core Audio process tap needs at least one guest process already registered with the host's
+ * audio HAL — right after boot this can transiently be empty. Polls `fn` via waitForCondition
+ * instead of treating that as a hard failure; any other error passes through immediately for the
+ * caller's own isAudioCaptureUnavailable()/t.skip() handling.
+ *
+ * If the whole wait budget is spent still seeing that error, waitForCondition would otherwise
+ * throw its own generic timeout Error — losing the real NativeSimOperationError and turning what
+ * should be a graceful isAudioCaptureUnavailable()/t.skip() into a hard test failure. The last
+ * real error is tracked and re-thrown instead.
+ */
+async function retryUntilAudioProcessesFound<T>(fn: () => Promise<T>): Promise<T> {
+  let result: T | undefined;
+  let lastError: unknown;
+  try {
+    await waitForCondition(
+      async () => {
+        try {
+          result = await fn();
+          return true;
+        } catch (err) {
+          const noProcessesYet =
+            err instanceof NativeSimOperationError && err.domain === 'com.appium.coresim.AudioTap' && err.code === 2;
+          if (!noProcessesYet) {
+            throw err;
+          }
+          lastError = err;
+          return false;
+        }
+      },
+      {waitMs: 20000, intervalMs: 1000},
+    );
+  } catch (err) {
+    throw lastError ?? err;
+  }
+  return result as T;
+}
+
+/**
+ * Whether `err` means the audio-capture side of `audio: true` isn't usable here — host macOS
+ * predates 14.2, or no guest process ever registered with CoreAudio — rather than a real bug.
+ * Doesn't cover a TCC denial, which isn't a thrown error at all (see CLAUDE.md); these tests only
+ * assert the pipeline produces a structurally valid track, never that it's actually audible.
+ */
+function isAudioCaptureUnavailable(err: unknown): boolean {
+  return (
+    err instanceof NativeSimUnavailableError ||
+    (err instanceof NativeSimOperationError && err.domain === 'com.appium.coresim.AudioTap')
+  );
+}
+
+/**
  * Reads a permission's current grant state straight out of the simulator's own TCC.db — the same
  * database grantPermission/revokePermission/resetPermission write to (see CLAUDE.md) — so these
  * tests verify the actual persisted effect, not just that the call didn't throw.
@@ -60,7 +115,7 @@ function isIOSRuntime(runtimeIdentifier: string): boolean {
  * @returns `true`/`false` if a row exists, `undefined` if the permission is unset (no row, e.g.
  * after resetPermission)
  */
-function readTCCGranted(udid: string, tccService: string, bundleId: string): boolean | undefined {
+async function readTCCGranted(udid: string, tccService: string, bundleId: string): Promise<boolean | undefined> {
   const dbPath = path.join(
     os.homedir(),
     'Library',
@@ -73,17 +128,21 @@ function readTCCGranted(udid: string, tccService: string, bundleId: string): boo
     'TCC',
     'TCC.db',
   );
-  const query = (sql: string) =>
-    Number(execFileSync('sqlite3', ['-line', dbPath, sql], {encoding: 'utf8'}).split('=')[1]?.trim() ?? '0');
+  const query = async (sql: string) => {
+    const {stdout} = await execFileAsync('sqlite3', ['-line', dbPath, sql]);
+    return Number(stdout.split('=')[1]?.trim() ?? '0');
+  };
   const rowExists =
-    query(`SELECT count(*) FROM access WHERE service='${tccService}' AND client='${bundleId}' AND client_type=0`) > 0;
+    (await query(
+      `SELECT count(*) FROM access WHERE service='${tccService}' AND client='${bundleId}' AND client_type=0`,
+    )) > 0;
   if (!rowExists) {
     return undefined;
   }
   return (
-    query(
+    (await query(
       `SELECT count(*) FROM access WHERE service='${tccService}' AND client='${bundleId}' AND client_type=0 AND auth_value=2`,
-    ) > 0
+    )) > 0
   );
 }
 
@@ -138,9 +197,9 @@ function compareVersions(a: string, b: string): number {
  * Xcode's own version stopped tracking the iOS version it bundles around Xcode 16 (16.4 ships the
  * 18.5 SDK, not "16.x") — this reads the real bundled version instead of assuming they match.
  */
-function activeSimulatorSdkVersion(): string | null {
-  const output = execFileSync('xcrun', ['--sdk', 'iphonesimulator', '--show-sdk-version'], {encoding: 'utf8'});
-  const match = /^(\d+)\.(\d+)/.exec(output.trim());
+async function activeSimulatorSdkVersion(): Promise<string | null> {
+  const {stdout} = await execFileAsync('xcrun', ['--sdk', 'iphonesimulator', '--show-sdk-version']);
+  const match = /^(\d+)\.(\d+)/.exec(stdout.trim());
   return match ? `${match[1]}.${match[2]}` : null;
 }
 
@@ -149,11 +208,11 @@ function activeSimulatorSdkVersion(): string | null {
 // would pick an arbitrary one instead of the runtime the job's matrix entry actually asked for.
 // Prefer the runtime matching the active Xcode's own bundled SDK version; fall back to the newest
 // installed only if that exact runtime isn't present.
-function selectTarget(fixtures: RuntimeFixture[]): RuntimeFixture[] {
+async function selectTarget(fixtures: RuntimeFixture[]): Promise<RuntimeFixture[]> {
   if (fixtures.length === 0) {
     return [];
   }
-  const sdkVersion = activeSimulatorSdkVersion();
+  const sdkVersion = await activeSimulatorSdkVersion();
   const exactMatch = sdkVersion
     ? fixtures.find((f) => f.runtimeVersion === sdkVersion || f.runtimeVersion.startsWith(`${sdkVersion}.`))
     : undefined;
@@ -166,7 +225,7 @@ const sim = new NativeSimctl();
 const fixtures = await availableRuntimeFixtures(sim);
 // Only one runtime is exercised — the CI job matrix already varies Xcode/CoreSimulator version,
 // which is the axis that matters here; see selectTarget for why it's not just fixtures[0].
-const targets = selectTarget(fixtures);
+const targets = await selectTarget(fixtures);
 // One throwaway cert shared across every runtime's keychain checks — its content is irrelevant,
 // so there's no reason to mint a fresh one per runtime.
 const certPath = await createSelfSignedCert();
@@ -204,8 +263,9 @@ describe('NativeSimctl integration', () => {
         // (see CLAUDE.md), and unlike getEnv() (a plain host-filesystem read), not every endpoint
         // is necessarily as graceful about running against a not-yet-fully-settled simulator.
         // Waiting here, once, up front means every check below runs against a genuinely booted
-        // device instead of each one having to reason about this itself.
-        await sim.waitForBoot(device.udid);
+        // device instead of each one having to reason about this itself. The library's own default
+        // (240s) isn't always enough on a loaded CI runner — observed exceeded for iOS 26.5 in CI.
+        await sim.waitForBoot(device.udid, IS_CI ? {timeoutMs: 480_000} : undefined);
       });
 
       after(async () => {
@@ -341,13 +401,13 @@ describe('NativeSimctl integration', () => {
         const bundleId = 'com.appium.coresim.doesnotexist';
 
         await sim.grantPermission(device!.udid, 'camera', bundleId);
-        assert.strictEqual(readTCCGranted(device!.udid, 'kTCCServiceCamera', bundleId), true);
+        assert.strictEqual(await readTCCGranted(device!.udid, 'kTCCServiceCamera', bundleId), true);
 
         await sim.revokePermission(device!.udid, 'camera', bundleId);
-        assert.strictEqual(readTCCGranted(device!.udid, 'kTCCServiceCamera', bundleId), false);
+        assert.strictEqual(await readTCCGranted(device!.udid, 'kTCCServiceCamera', bundleId), false);
 
         await sim.resetPermission(device!.udid, 'camera', bundleId);
-        assert.strictEqual(readTCCGranted(device!.udid, 'kTCCServiceCamera', bundleId), undefined);
+        assert.strictEqual(await readTCCGranted(device!.udid, 'kTCCServiceCamera', bundleId), undefined);
       });
 
       it('reads a privacy permission status through the same grant/revoke/reset lifecycle', async () => {
@@ -489,51 +549,52 @@ describe('NativeSimctl integration', () => {
 
       it('records a video of the booted device, enforcing one recording at a time', async (t) => {
         const outputFile = path.join(os.tmpdir(), `coresim-video-test-${Date.now()}-${process.pid}.mp4`);
-        assert.strictEqual(await sim.isVideoRecording(device!.udid), false);
         try {
-          await sim.startVideoRecording(device!.udid, outputFile);
-        } catch (err) {
-          if (err instanceof NativeSimUnavailableError) {
-            return t.skip(`video recording unavailable on this CoreSimulator: ${err.message}`);
+          assert.strictEqual(await sim.isVideoRecording(device!.udid), false);
+          try {
+            await sim.startVideoRecording(device!.udid, outputFile);
+          } catch (err) {
+            if (err instanceof NativeSimUnavailableError) {
+              return t.skip(`video recording unavailable on this CoreSimulator: ${err.message}`);
+            }
+            throw err;
           }
-          throw err;
-        }
-        assert.strictEqual(await sim.isVideoRecording(device!.udid), true);
-        try {
-          // A second concurrent recording for the same device must reject rather than silently
-          // replacing the first one (see commands/video-recording.ts).
-          await assert.rejects(sim.startVideoRecording(device!.udid, outputFile), /already in progress/);
+          assert.strictEqual(await sim.isVideoRecording(device!.udid), true);
+          try {
+            // A second concurrent recording for the same device must reject rather than silently
+            // replacing the first one (see commands/video-recording.ts).
+            await assert.rejects(sim.startVideoRecording(device!.udid, outputFile), /already in progress/);
+          } finally {
+            await sim.stopVideoRecording(device!.udid);
+          }
+          assert.strictEqual(await sim.isVideoRecording(device!.udid), false);
+
+          const stats = await fs.promises.stat(outputFile);
+          assert.ok(stats.size > 0, 'expected a non-empty recorded video file');
+
+          // Nothing left running — a second stop must reject, not silently succeed.
+          await assert.rejects(sim.stopVideoRecording(device!.udid), /No video recording is in progress/);
+
+          if (await hasFfmpeg()) {
+            const {stdout} = await execFileAsync('ffprobe', [
+              '-v',
+              'error',
+              '-select_streams',
+              'v:0',
+              '-show_entries',
+              'stream=codec_name',
+              '-of',
+              'default=noprint_wrappers=1:nokey=1',
+              outputFile,
+            ]);
+            const codec = stdout.trim();
+            // CoreSimulator's own default (see sim_video_recording.h) — distinct from simctl's own
+            // CLI-level default of hevc, which is simctl always passing the codec key explicitly.
+            assert.strictEqual(codec, 'h264');
+          }
         } finally {
-          await sim.stopVideoRecording(device!.udid);
+          await fs.promises.rm(outputFile, {force: true});
         }
-        assert.strictEqual(await sim.isVideoRecording(device!.udid), false);
-
-        const stats = await fs.promises.stat(outputFile);
-        assert.ok(stats.size > 0, 'expected a non-empty recorded video file');
-
-        // Nothing left running — a second stop must reject, not silently succeed.
-        await assert.rejects(sim.stopVideoRecording(device!.udid), /No video recording is in progress/);
-
-        if (await hasFfmpeg()) {
-          const codec = execFileSync('ffprobe', [
-            '-v',
-            'error',
-            '-select_streams',
-            'v:0',
-            '-show_entries',
-            'stream=codec_name',
-            '-of',
-            'default=noprint_wrappers=1:nokey=1',
-            outputFile,
-          ])
-            .toString()
-            .trim();
-          // CoreSimulator's own default (see sim_video_recording.h) — distinct from simctl's own
-          // CLI-level default of hevc, which is simctl always passing the codec key explicitly.
-          assert.strictEqual(codec, 'h264');
-        }
-
-        await fs.promises.rm(outputFile, {force: true});
       });
 
       it('records a video with an explicit codec, mask, and displayId', async (t) => {
@@ -546,35 +607,79 @@ describe('NativeSimctl integration', () => {
 
         const outputFile = path.join(os.tmpdir(), `coresim-video-test-hevc-${Date.now()}-${process.pid}.mp4`);
         try {
-          await sim.startVideoRecording(device!.udid, outputFile, {
-            codec: 'hevc',
-            mask: 'black',
-            displayId: targetDisplay.id,
-          });
-        } catch (err) {
-          if (err instanceof NativeSimUnavailableError) {
-            return t.skip(`video recording unavailable on this CoreSimulator: ${err.message}`);
+          try {
+            await sim.startVideoRecording(device!.udid, outputFile, {
+              codec: 'hevc',
+              mask: 'black',
+              displayId: targetDisplay.id,
+            });
+          } catch (err) {
+            if (err instanceof NativeSimUnavailableError) {
+              return t.skip(`video recording unavailable on this CoreSimulator: ${err.message}`);
+            }
+            throw err;
           }
-          throw err;
+          await sim.stopVideoRecording(device!.udid);
+
+          const {stdout} = await execFileAsync('ffprobe', [
+            '-v',
+            'error',
+            '-select_streams',
+            'v:0',
+            '-show_entries',
+            'stream=codec_name',
+            '-of',
+            'default=noprint_wrappers=1:nokey=1',
+            outputFile,
+          ]);
+          assert.strictEqual(stdout.trim(), 'hevc');
+        } finally {
+          await fs.promises.rm(outputFile, {force: true});
         }
-        await sim.stopVideoRecording(device!.udid);
+      });
 
-        const codec = execFileSync('ffprobe', [
-          '-v',
-          'error',
-          '-select_streams',
-          'v:0',
-          '-show_entries',
-          'stream=codec_name',
-          '-of',
-          'default=noprint_wrappers=1:nokey=1',
-          outputFile,
-        ])
-          .toString()
-          .trim();
-        assert.strictEqual(codec, 'hevc');
+      it('records a video with audio, muxed as a second AAC track', async (t) => {
+        if (IS_CI) {
+          return t.skip('audio capture can block for ~180s (MACH_RCV_TIMED_OUT) on some CI runners — see CLAUDE.md');
+        }
+        if (!(await hasFfmpeg())) {
+          return t.skip('ffmpeg/ffprobe not installed');
+        }
+        const outputFile = path.join(os.tmpdir(), `coresim-video-audio-test-${Date.now()}-${process.pid}.mp4`);
+        try {
+          try {
+            await retryUntilAudioProcessesFound(() => sim.startVideoRecording(device!.udid, outputFile, {audio: true}));
+          } catch (err) {
+            if (isAudioCaptureUnavailable(err)) {
+              return t.skip(`audio capture unavailable on this host: ${(err as Error).message}`);
+            }
+            throw err;
+          }
+          // Give real PCM time to flow before stopping, so the audio track ends up with actual
+          // samples rather than being added to the writer but never written to.
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+          await sim.stopVideoRecording(device!.udid);
 
-        await fs.promises.rm(outputFile, {force: true});
+          const {stdout: streamsOutput} = await execFileAsync('ffprobe', [
+            '-v',
+            'error',
+            '-show_entries',
+            'stream=codec_type,codec_name',
+            '-of',
+            'csv=p=0',
+            outputFile,
+          ]);
+          const streams = streamsOutput.trim().split('\n');
+          // `audio` bypasses the private recorder — this addon's own encoder always defaults to
+          // h264, unlike the private recorder's own default asserted above.
+          assert.ok(streams.includes('h264,video'), `expected an h264 video stream, got: ${streams}`);
+          assert.ok(streams.includes('aac,audio'), `expected an AAC audio stream, got: ${streams}`);
+
+          // Decodes both tracks end-to-end, not just that ffprobe can enumerate the streams.
+          await execFileAsync('ffmpeg', ['-v', 'error', '-i', outputFile, '-f', 'null', '-']);
+        } finally {
+          await fs.promises.rm(outputFile, {force: true});
+        }
       });
 
       it('streams video in real time via VideoToolbox, yielding decodable access units', async (t) => {
@@ -625,7 +730,7 @@ describe('NativeSimctl integration', () => {
           const rawPath = path.join(os.tmpdir(), `coresim-stream-test-${Date.now()}-${process.pid}.h264`);
           await fs.promises.writeFile(rawPath, raw);
           try {
-            const codec = execFileSync('ffprobe', [
+            const {stdout} = await execFileAsync('ffprobe', [
               '-v',
               'error',
               '-select_streams',
@@ -635,15 +740,39 @@ describe('NativeSimctl integration', () => {
               '-of',
               'default=noprint_wrappers=1:nokey=1',
               rawPath,
-            ])
-              .toString()
-              .trim();
-            assert.strictEqual(codec, 'h264');
+            ]);
+            assert.strictEqual(stdout.trim(), 'h264');
             // Decodes with no errors — validates the Annex-B framing/parameter sets are correct.
-            execFileSync('ffmpeg', ['-v', 'error', '-i', rawPath, '-f', 'null', '-']);
+            await execFileAsync('ffmpeg', ['-v', 'error', '-i', rawPath, '-f', 'null', '-']);
           } finally {
             await fs.promises.rm(rawPath, {force: true});
           }
+        }
+      });
+
+      it('does not crash on exit after stop() while the stream wrapper is still referenced', async (t) => {
+        const childScript = fileURLToPath(new URL('./av-abort-delivery-child.js', import.meta.url));
+        try {
+          // Some CI hosts/older Xcode runtimes are just slow at this (observed: 44s for an
+          // otherwise-instant stream test on an Xcode 16.4/iOS 18.5 leg) — generous headroom here
+          // since a slow-but-working host would otherwise get SIGTERM'd by this timeout and
+          // misreported as a crash below.
+          await execFileAsync(process.execPath, [childScript, device!.udid], {timeout: IS_CI ? 120000 : 20000});
+        } catch (err) {
+          const execErr = err as {code?: number | string; signal?: string | null; killed?: boolean; stderr?: string};
+          if (execErr.code === 2) {
+            return t.skip('video streaming unavailable on this CoreSimulator');
+          }
+          if (execErr.killed && execErr.signal === 'SIGTERM') {
+            // Our own timeout above killed it — a slow host, not evidence of the crash this test
+            // guards against (that reproduces as SIGABRT, near-instantly once it happens).
+            return t.skip(`child process did not finish within the timeout — too slow to test here, not a crash`);
+          }
+          throw new Error(
+            `child process exited abnormally (code=${execErr.code}, signal=${execErr.signal}) — see CLAUDE.md's ` +
+              `TsfnReleaseGuard note if this is a crash, not just a timeout:\n${execErr.stderr}`,
+            {cause: err},
+          );
         }
       });
 
@@ -665,6 +794,72 @@ describe('NativeSimctl integration', () => {
         await stream.stop();
 
         await assert.rejects(sim.startVideoStream(device!.udid, {displayId: 'not-a-real-display-id'}));
+      });
+
+      it('streams video and audio interleaved via a Core Audio process tap', async (t) => {
+        if (IS_CI) {
+          return t.skip('audio capture can block for ~180s (MACH_RCV_TIMED_OUT) on some CI runners — see CLAUDE.md');
+        }
+        let stream: Awaited<ReturnType<typeof sim.startVideoStream>>;
+        try {
+          stream = await retryUntilAudioProcessesFound(() =>
+            sim.startVideoStream(device!.udid, {fps: 10, audio: true}),
+          );
+        } catch (err) {
+          if (isAudioCaptureUnavailable(err)) {
+            return t.skip(`audio capture unavailable on this host: ${(err as Error).message}`);
+          }
+          throw err;
+        }
+
+        // Toggling appearance repaints the screen, forcing video frames beyond the initial keyframe.
+        let dark = 0;
+        const wiggle = setInterval(() => {
+          dark = 1 - dark;
+          sim.setAppearance(device!.udid, dark).catch(() => {});
+        }, 150);
+
+        const controller = new AbortController();
+        const units: Array<{track: 'video' | 'audio'; data: Buffer; isKeyFrame: boolean; sequence: number}> = [];
+        const timeout = setTimeout(() => controller.abort(), 15000);
+        try {
+          for await (const unit of stream.accessUnits(controller.signal)) {
+            units.push(unit);
+            const sawBothTracks = units.some((u) => u.track === 'video') && units.some((u) => u.track === 'audio');
+            if (sawBothTracks || units.length >= 200) {
+              controller.abort();
+              break;
+            }
+          }
+        } finally {
+          clearTimeout(timeout);
+          clearInterval(wiggle);
+          await stream.stop();
+        }
+
+        const videoUnits = units.filter((u) => u.track === 'video');
+        const audioUnits = units.filter((u) => u.track === 'audio');
+        assert.ok(videoUnits.length > 0, 'expected at least one video access unit');
+        assert.ok(audioUnits.length > 0, 'expected at least one audio access unit');
+        assert.strictEqual(videoUnits[0].isKeyFrame, true, 'the first video access unit must be a keyframe');
+        assert.ok(
+          audioUnits.every((u) => u.isKeyFrame),
+          'every audio access unit should report isKeyFrame (always independently decodable)',
+        );
+        assert.ok(
+          audioUnits.every((u) => u.data.length > 0),
+          'expected non-empty audio packets',
+        );
+        // Sequence numbers are independent per track (see VideoAccessUnit's own doc comment) — each
+        // must still be its own strictly increasing run within the interleaved delivery order.
+        assert.deepStrictEqual(
+          videoUnits.map((u) => u.sequence),
+          videoUnits.map((_, i) => i),
+        );
+        assert.deepStrictEqual(
+          audioUnits.map((u) => u.sequence),
+          audioUnits.map((_, i) => i),
+        );
       });
 
       if (isIOSRuntime(fixture.runtimeIdentifier)) {

@@ -154,11 +154,43 @@ toolchain (`make` and `xcodebuild`).
   process on a torn-down env. So each TSFN callback body also wraps its `jsCallback.Call(...)` in
   its own `try { ... } catch (...) {}` — dropping a frame nothing can receive is safe, letting the
   exception escape isn't.
+- **`Napi::ThreadSafeFunction::Release()`/`Abort()` must never both run for the same TSFN.** They're
+  two mutually exclusive modes of one underlying destroy call — Node's own docs call using either a
+  second time (including calling the other one afterward) undefined behavior, since the handle may
+  already be gone. `VideoStreamSession`/`AVStreamSession` release their `accessUnitTsfn`/`errorTsfn`
+  normally via `onEnd` on `stop()` — but a session stays in `ActiveSessionRegistry` (and thus
+  reachable by `CleanupActiveSessions`'s exit-time `AbortDelivery()`, see above) until its JS
+  wrapper is `Finalize()`d, not until `stop()` completes. A caller that `stop()`s a stream, keeps
+  the returned handle referenced, then lets the process exit hits exactly this race. `coresim.mm`'s
+  `TsfnReleaseGuard`/`ReleaseTsfnOnce` make whichever of the two wins first the only one that
+  actually runs — any new TSFN pair with both a normal-release and an abort path needs the same
+  guard, not just a `running_`/state-flag check (insufficient — see the guard's own comment for
+  why).
 - **A `VideoStream` can't actually be garbage-collected while running — not a bug.** Its
   `onAccessUnit`/`onError` callbacks close over the `VideoStream` itself, and a live
   `Napi::ThreadSafeFunction` holds a persistent V8 reference to them until `.Release()`d (only via
   `stop()`/`onEnd`), rooting the whole chain and keeping the event loop alive. An abandoned, never-
   `stop()`'d stream just runs forever, same as any other unclosed live resource in this addon.
+- **`startVideoRecording`/`startVideoStream`'s `audio` option (or an explicit `fps` on
+  `startVideoRecording`) routes through this addon's own encoders, since CoreSimulator has no audio
+  capture API at all.** `sim_audio_tap.mm` isolates one device's audio via a public Core Audio
+  **process tap** (`CATapDescription`/`AudioHardwareCreateProcessTap`, macOS 14.2+) scoped to that
+  device's guest PIDs, wrapped in a private aggregate device; `audio_encoder.mm` encodes to AAC-LC;
+  `av_recording.mm`/`av_stream.mm` mux/interleave it with `video_encoder.mm`'s VideoToolbox output.
+  **Needs the host's "System Audio Recording Only" TCC permission** (`kTCCServiceAudioCapture`) —
+  keyed to the *host* process's code identity (not the guest's TCC.db), has no query API, and a
+  denial isn't a catchable error — it's silent all-zero PCM. The host's own TCC.db can't be read to
+  detect this either: opening it needs Full Disk Access, an equally ungrantable permission. CI seeds
+  the grant directly since GitHub-hosted runners ship with SIP disabled (`scripts/ci/grant-audio-
+  capture.sh`, `integration-test.yml`'s `grant-audio-capture` input) — the integration tests still
+  only assert the audio track/units are structurally valid, never audible. A host with no default
+  audio output device at all is checked for and rejected in milliseconds, but that's not the only
+  slow-host failure mode: on some CI runners (confirmed on the `26.5`/`27.0` matrix legs, not
+  `16.4`) `AudioDeviceStart` blocks for ~180s before failing with `MACH_RCV_TIMED_OUT` (a Mach IPC
+  timeout talking to `coreaudiod`) even though a default device exists — not predictable or
+  avoidable from our side, so the audio-capture integration tests currently skip outright in CI
+  (`IS_CI` in `coresim-integration.spec.ts`) rather than pay that cost on every run; they still run
+  normally locally.
 - **`getAppContainer` is a pure TS convenience wrapper over `appInfo`'s existing `Path`/
   `DataContainer`/`GroupContainers` fields** (see `commands/app.ts`) — no new native call, since
   `propertiesOfApplication:` already reports every container path `simctl get_app_container` does.
