@@ -17,11 +17,6 @@ function fakeSim(stopImpl: () => Promise<void>): NativeSimctl {
 
 const outputFile = path.join(process.cwd(), 'fake-recording.mp4');
 
-/**
- * Pure JS-level coverage of `stopVideoRecording`'s `force` option — see
- * coresim-stuck-video-recording.md for the stuck-entry scenario this closes. Mutating/native-backed
- * recording coverage lives under test/integration instead.
- */
 describe('stopVideoRecording force option', () => {
   it('without force, a failed native stop leaves the entry retryable', async () => {
     const udid = `force-test-retry-${Date.now()}`;
