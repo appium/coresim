@@ -198,7 +198,7 @@ export class JpegStream extends EventEmitter {
  * concurrent streams/recordings can run on the same device at once.
  *
  * @param udid — UDID of the device to stream; must be booted
- * @param options — `displayId`, `fps`, `quality` — see {@link JpegStreamOptions}
+ * @param options — `displayId`, `fps`, `quality`, `scale` — see {@link JpegStreamOptions}
  */
 export async function startJpegStream(
   this: NativeSimctl,
@@ -215,6 +215,9 @@ export async function startJpegStream(
     (!Number.isFinite(options.quality) || options.quality < 0 || options.quality > 100)
   ) {
     throw new RangeError(`quality must be a number between 0 and 100, got ${options.quality}`);
+  }
+  if (options.scale !== undefined && (!Number.isFinite(options.scale) || options.scale <= 0 || options.scale > 100)) {
+    throw new RangeError(`scale must be a number greater than 0 and no greater than 100, got ${options.scale}`);
   }
   const device = await runCatchingAsync(() => this._findDevice(udid));
   const stream = new JpegStream();

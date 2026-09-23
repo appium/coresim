@@ -15,6 +15,9 @@ struct JpegStreamOptions {
   // 0-100 percent; nil for ImageIO's own default (near-lossless) — same semantics as
   // CaptureScreenshot's jpegQualityPercent (sim_screenshot.h).
   NSNumber* jpegQualityPercent = nil;
+  // 0.0-1.0 fraction of the original frame's width/height; 1.0 (default) performs no scaling.
+  // Already normalized from the JS-facing 1-100 percent option by coresim.mm.
+  double scale = 1.0;
 };
 
 // One JPEG-encoded frame. Unlike VideoAccessUnit, every frame is independently decodable — there's

@@ -193,6 +193,12 @@ class JpegStreamSession::Impl {
     if (ciImage == nil) {
       return false;
     }
+    // Scaling the CIImage before rendering (rather than resizing the already-encoded JPEG
+    // afterward, the way e.g. WebDriverAgent's own scaling does) means the CGImage/JPEG below is
+    // produced at the target resolution directly — no extra decode/resize/re-encode round trip.
+    if (options_.scale != 1.0) {
+      ciImage = [ciImage imageByApplyingTransform:CGAffineTransformMakeScale(options_.scale, options_.scale)];
+    }
     CGImageRef cgImage = [context_ createCGImage:ciImage fromRect:ciImage.extent];
     if (cgImage == nil) {
       return false;

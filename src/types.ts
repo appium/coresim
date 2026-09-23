@@ -221,6 +221,11 @@ export interface JpegStreamOptions {
    * Defaults to ImageIO's own default (near-lossless) when omitted.
    */
   quality?: number;
+  /**
+   * Frame scale as a percentage of the original display resolution — 100 (default) performs no
+   * scaling; must be greater than 0 and no greater than 100.
+   */
+  scale?: number;
 }
 
 /**
@@ -478,7 +483,7 @@ export interface NativeDeviceHandle {
     onError: NativeVideoErrorCallback,
   ): Promise<NativeVideoStreamHandle>;
   startJpegStream(
-    options: {displayId?: string; fps?: number; quality?: number} | undefined,
+    options: {displayId?: string; fps?: number; quality?: number; scale?: number} | undefined,
     onFrame: NativeJpegFrameCallback,
     onError: NativeVideoErrorCallback,
   ): Promise<NativeJpegStreamHandle>;

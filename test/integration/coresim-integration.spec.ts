@@ -179,6 +179,26 @@ async function availableRuntimeFixtures(sim: NativeSimctl): Promise<RuntimeFixtu
   });
 }
 
+/**
+ * Parses width/height out of a JPEG's SOF marker — avoids a temp file/subprocess just to check a
+ * frame's actual pixel dimensions (e.g. for asserting `startJpegStream`'s `scale` option).
+ */
+function jpegDimensions(data: Buffer): {width: number; height: number} {
+  let offset = 2; // skip the SOI marker (0xffd8)
+  while (offset < data.length) {
+    if (data[offset] !== 0xff) {
+      throw new Error(`expected a JPEG marker at offset ${offset}`);
+    }
+    const marker = data[offset + 1];
+    const isStartOfFrame = marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc;
+    if (isStartOfFrame) {
+      return {height: data.readUInt16BE(offset + 5), width: data.readUInt16BE(offset + 7)};
+    }
+    offset += 2 + data.readUInt16BE(offset + 2);
+  }
+  throw new Error('no SOF marker found in JPEG data');
+}
+
 /** Numeric dot-separated version comparison, e.g. `"26.4"` vs `"16.4.1"`. */
 function compareVersions(a: string, b: string): number {
   const partsA = a.split('.').map(Number);
@@ -937,6 +957,39 @@ describe('NativeSimctl integration', () => {
         }
         const highQuality = await firstFrame(95);
         assert.ok(lowQuality.length < highQuality.length, 'lower JPEG quality should encode smaller');
+      });
+
+      it('scales down JPEG stream frames by the given percentage', async (t) => {
+        async function firstFrameDimensions(scale?: number): Promise<{width: number; height: number}> {
+          const stream = await sim.startJpegStream(device!.udid, {fps: 10, scale});
+          try {
+            const {value} = await stream.frames().next();
+            assert.ok(value, 'expected a frame');
+            return jpegDimensions(value.data);
+          } finally {
+            await stream.stop();
+          }
+        }
+
+        let full: {width: number; height: number};
+        try {
+          full = await firstFrameDimensions();
+        } catch (err) {
+          if (err instanceof NativeSimUnavailableError) {
+            return t.skip(`JPEG streaming unavailable on this CoreSimulator: ${err.message}`);
+          }
+          throw err;
+        }
+        const half = await firstFrameDimensions(50);
+        // The scale transform rounds each dimension independently, so allow a ±1px fudge factor.
+        assert.ok(Math.abs(half.width - full.width / 2) <= 1, `expected width ~${full.width / 2}, got ${half.width}`);
+        assert.ok(
+          Math.abs(half.height - full.height / 2) <= 1,
+          `expected height ~${full.height / 2}, got ${half.height}`,
+        );
+
+        await assert.rejects(sim.startJpegStream(device!.udid, {scale: 0}), RangeError);
+        await assert.rejects(sim.startJpegStream(device!.udid, {scale: 101}), RangeError);
       });
 
       it('does not crash on exit after stop() while the JPEG stream wrapper is still referenced', async (t) => {

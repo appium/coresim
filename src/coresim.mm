@@ -1132,6 +1132,7 @@ class NativeDevice : public Napi::ObjectWrap<NativeDevice> {
     NSString* displayId = nil;
     double fps = 15.0;
     NSNumber* jpegQualityPercent = nil;
+    double scale = 1.0;
     if (info.Length() > argIndex && info[argIndex].IsObject()) {
       Napi::Object options = info[argIndex].As<Napi::Object>();
       if (options.Has("displayId") && options.Get("displayId").IsString()) {
@@ -1143,8 +1144,13 @@ class NativeDevice : public Napi::ObjectWrap<NativeDevice> {
       if (options.Has("quality") && options.Get("quality").IsNumber()) {
         jpegQualityPercent = @(options.Get("quality").As<Napi::Number>().DoubleValue());
       }
+      // JS-facing `scale` is a 1-100 percent (commands/jpeg-stream.ts already validates the
+      // range), converted here to the 0.0-1.0 fraction JpegStreamSession actually applies.
+      if (options.Has("scale") && options.Get("scale").IsNumber()) {
+        scale = options.Get("scale").As<Napi::Number>().DoubleValue() / 100.0;
+      }
     }
-    return coresim::JpegStreamOptions{displayId, fps, jpegQualityPercent};
+    return coresim::JpegStreamOptions{displayId, fps, jpegQualityPercent, scale};
   }
 
   static bool OptionsWantAudio(const Napi::CallbackInfo& info, size_t argIndex) {
