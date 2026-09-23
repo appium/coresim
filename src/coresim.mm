@@ -184,6 +184,29 @@ struct RuntimeEntry {
   std::string versionString;
 };
 
+// Napi::ThreadSafeFunction::Release() and Abort() are two mutually exclusive modes of one
+// underlying napi_release_threadsafe_function call — Node's own docs say calling either a second
+// time (including calling the other one after the first) is undefined behavior, since the handle
+// may already be destroyed. A stream's normal stop-triggered release (onEnd) and
+// CleanupActiveSessions's exit-time AbortDelivery can race — a session stays registered until its
+// JS wrapper is GC'd, not until Stop() completes, so an already-stopped-but-still-referenced
+// stream can still be hit by AbortDelivery() later. This guard makes whichever of Release()/
+// Abort() runs first win, and turns the other into a no-op instead of a second, unsafe call.
+struct TsfnReleaseGuard {
+  std::mutex mutex;
+  bool done = false;
+};
+
+template <typename Fn>
+void ReleaseTsfnOnce(const std::shared_ptr<TsfnReleaseGuard>& guard, Fn&& releaseOrAbort) {
+  std::lock_guard<std::mutex> lock(guard->mutex);
+  if (guard->done) {
+    return;
+  }
+  guard->done = true;
+  releaseOrAbort();
+}
+
 // Node-API explicitly prohibits sharing an Environment's data across Environments (e.g. two
 // worker_threads instances each `require()`-ing this addon) — each gets its own separate call
 // into Init() below. A process-global `static Napi::FunctionReference` per class would let one
@@ -1222,12 +1245,16 @@ class NativeDevice : public Napi::ObjectWrap<NativeDevice> {
         Napi::ThreadSafeFunction::New(env, onAccessUnit, "coresim video stream access unit", kAccessUnitQueueSize, 1);
     Napi::ThreadSafeFunction errorTsfn =
         Napi::ThreadSafeFunction::New(env, onError, "coresim video stream error", 0, 1);
+    // See TsfnReleaseGuard's own comment — shared between onEnd's release and AbortDelivery's
+    // abort below so exactly one of them ever actually runs.
+    auto tsfnGuard = std::make_shared<TsfnReleaseGuard>();
 
     if (OptionsWantAudio(info, 0)) {
       NSString* udid = DeviceUDID(device).UUIDString;
       return RunAsync<std::shared_ptr<coresim::AVStreamSession>>(
           env,
-          [device, udid, options, accessUnitTsfn, errorTsfn]() mutable -> std::shared_ptr<coresim::AVStreamSession> {
+          [device, udid, options, accessUnitTsfn, errorTsfn,
+           tsfnGuard]() mutable -> std::shared_ptr<coresim::AVStreamSession> {
             auto session = std::make_shared<coresim::AVStreamSession>(
                 device, udid, options,
                 [accessUnitTsfn](coresim::AVAccessUnit unit) mutable {
@@ -1257,22 +1284,28 @@ class NativeDevice : public Napi::ObjectWrap<NativeDevice> {
                     }
                   });
                 },
-                [accessUnitTsfn, errorTsfn]() mutable {
-                  accessUnitTsfn.Release();
-                  errorTsfn.Release();
+                [accessUnitTsfn, errorTsfn, tsfnGuard]() mutable {
+                  ReleaseTsfnOnce(tsfnGuard, [&]() mutable {
+                    accessUnitTsfn.Release();
+                    errorTsfn.Release();
+                  });
                 },
-                [accessUnitTsfn, errorTsfn]() mutable {
+                [accessUnitTsfn, errorTsfn, tsfnGuard]() mutable {
                   // See ActiveSessionRegistry::StopAll's use of AbortDelivery — unblocks a
                   // producer thread stuck pushing into a full queue so Stop() doesn't deadlock
                   // waiting on it.
-                  accessUnitTsfn.Abort();
-                  errorTsfn.Abort();
+                  ReleaseTsfnOnce(tsfnGuard, [&]() mutable {
+                    accessUnitTsfn.Abort();
+                    errorTsfn.Abort();
+                  });
                 });
             try {
               session->Start();
             } catch (...) {
-              accessUnitTsfn.Release();
-              errorTsfn.Release();
+              ReleaseTsfnOnce(tsfnGuard, [&]() mutable {
+                accessUnitTsfn.Release();
+                errorTsfn.Release();
+              });
               throw;
             }
             return session;
@@ -1284,7 +1317,8 @@ class NativeDevice : public Napi::ObjectWrap<NativeDevice> {
 
     return RunAsync<std::shared_ptr<coresim::VideoStreamSession>>(
         env,
-        [device, options, accessUnitTsfn, errorTsfn]() mutable -> std::shared_ptr<coresim::VideoStreamSession> {
+        [device, options, accessUnitTsfn, errorTsfn,
+         tsfnGuard]() mutable -> std::shared_ptr<coresim::VideoStreamSession> {
           auto session = std::make_shared<coresim::VideoStreamSession>(
               device, options,
               [accessUnitTsfn](coresim::VideoAccessUnit unit) mutable {
@@ -1317,20 +1351,26 @@ class NativeDevice : public Napi::ObjectWrap<NativeDevice> {
                   }
                 });
               },
-              [accessUnitTsfn, errorTsfn]() mutable {
-                accessUnitTsfn.Release();
-                errorTsfn.Release();
+              [accessUnitTsfn, errorTsfn, tsfnGuard]() mutable {
+                ReleaseTsfnOnce(tsfnGuard, [&]() mutable {
+                  accessUnitTsfn.Release();
+                  errorTsfn.Release();
+                });
               },
-              [accessUnitTsfn, errorTsfn]() mutable {
+              [accessUnitTsfn, errorTsfn, tsfnGuard]() mutable {
                 // See the audio branch's identical comment above.
-                accessUnitTsfn.Abort();
-                errorTsfn.Abort();
+                ReleaseTsfnOnce(tsfnGuard, [&]() mutable {
+                  accessUnitTsfn.Abort();
+                  errorTsfn.Abort();
+                });
               });
           try {
             session->Start();
           } catch (...) {
-            accessUnitTsfn.Release();
-            errorTsfn.Release();
+            ReleaseTsfnOnce(tsfnGuard, [&]() mutable {
+              accessUnitTsfn.Release();
+              errorTsfn.Release();
+            });
             throw;
           }
           return session;

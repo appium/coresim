@@ -154,6 +154,18 @@ toolchain (`make` and `xcodebuild`).
   process on a torn-down env. So each TSFN callback body also wraps its `jsCallback.Call(...)` in
   its own `try { ... } catch (...) {}` — dropping a frame nothing can receive is safe, letting the
   exception escape isn't.
+- **`Napi::ThreadSafeFunction::Release()`/`Abort()` must never both run for the same TSFN.** They're
+  two mutually exclusive modes of one underlying destroy call — Node's own docs call using either a
+  second time (including calling the other one afterward) undefined behavior, since the handle may
+  already be gone. `VideoStreamSession`/`AVStreamSession` release their `accessUnitTsfn`/`errorTsfn`
+  normally via `onEnd` on `stop()` — but a session stays in `ActiveSessionRegistry` (and thus
+  reachable by `CleanupActiveSessions`'s exit-time `AbortDelivery()`, see above) until its JS
+  wrapper is `Finalize()`d, not until `stop()` completes. A caller that `stop()`s a stream, keeps
+  the returned handle referenced, then lets the process exit hits exactly this race. `coresim.mm`'s
+  `TsfnReleaseGuard`/`ReleaseTsfnOnce` make whichever of the two wins first the only one that
+  actually runs — any new TSFN pair with both a normal-release and an abort path needs the same
+  guard, not just a `running_`/state-flag check (insufficient — see the guard's own comment for
+  why).
 - **A `VideoStream` can't actually be garbage-collected while running — not a bug.** Its
   `onAccessUnit`/`onError` callbacks close over the `VideoStream` itself, and a live
   `Napi::ThreadSafeFunction` holds a persistent V8 reference to them until `.Release()`d (only via

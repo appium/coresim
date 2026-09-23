@@ -6,6 +6,7 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import {after, before, describe, it} from 'node:test';
+import {fileURLToPath} from 'node:url';
 import {promisify} from 'node:util';
 
 import {waitForCondition} from 'asyncbox';
@@ -746,6 +747,23 @@ describe('NativeSimctl integration', () => {
           } finally {
             await fs.promises.rm(rawPath, {force: true});
           }
+        }
+      });
+
+      it('does not crash on exit after stop() while the stream wrapper is still referenced', async (t) => {
+        const childScript = fileURLToPath(new URL('./av-abort-delivery-child.js', import.meta.url));
+        try {
+          await execFileAsync(process.execPath, [childScript, device!.udid], {timeout: 15000});
+        } catch (err) {
+          const execErr = err as {code?: number | string; signal?: string | null; stderr?: string};
+          if (execErr.code === 2) {
+            return t.skip('video streaming unavailable on this CoreSimulator');
+          }
+          throw new Error(
+            `child process exited abnormally (code=${execErr.code}, signal=${execErr.signal}) — see CLAUDE.md's ` +
+              `TsfnReleaseGuard note if this is a crash, not just a timeout:\n${execErr.stderr}`,
+            {cause: err},
+          );
         }
       });
 
