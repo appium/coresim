@@ -78,7 +78,7 @@ async function retryUntilAudioProcessesFound<T>(fn: () => Promise<T>): Promise<T
           return true;
         } catch (err) {
           const noProcessesYet =
-            err instanceof NativeSimOperationError && err.domain === 'com.appium.coresim.AudioTap' && err.code === 2;
+            err instanceof NativeSimOperationError && err.domain === 'io.appium.coresim.AudioTap' && err.code === 2;
           if (!noProcessesYet) {
             throw err;
           }
@@ -103,7 +103,7 @@ async function retryUntilAudioProcessesFound<T>(fn: () => Promise<T>): Promise<T
 function isAudioCaptureUnavailable(err: unknown): boolean {
   return (
     err instanceof NativeSimUnavailableError ||
-    (err instanceof NativeSimOperationError && err.domain === 'com.appium.coresim.AudioTap')
+    (err instanceof NativeSimOperationError && err.domain === 'io.appium.coresim.AudioTap')
   );
 }
 
@@ -300,11 +300,11 @@ describe('NativeSimctl integration', () => {
       it('configures the booted device (location, Darwin notification)', async () => {
         await sim.setLocation(device!.udid, 37.7749, -122.4194);
         await sim.clearLocation(device!.udid);
-        await sim.postDarwinNotification(device!.udid, 'com.appium.coresim.test');
+        await sim.postDarwinNotification(device!.udid, 'io.appium.coresim.test');
       });
 
       it('gets and sets Darwin notification state', async () => {
-        const name = 'com.appium.coresim.test.state';
+        const name = 'io.appium.coresim.test.state';
         assert.strictEqual(await sim.getDarwinNotificationState(device!.udid, name), 0n);
         await sim.setDarwinNotificationState(device!.udid, name, 1n);
         assert.strictEqual(await sim.getDarwinNotificationState(device!.udid, name), 1n);
@@ -313,7 +313,7 @@ describe('NativeSimctl integration', () => {
       it('round-trips Darwin notification state beyond Number.MAX_SAFE_INTEGER', async () => {
         // 2^53 + 1 — the smallest integer a JS `number` can no longer represent exactly, so a
         // successful round trip here proves the value survives as a real bigint, not a double.
-        const name = 'com.appium.coresim.test.state.large';
+        const name = 'io.appium.coresim.test.state.large';
         const large = 2n ** 53n + 1n;
         assert.ok(large > BigInt(Number.MAX_SAFE_INTEGER));
         await sim.setDarwinNotificationState(device!.udid, name, large);
@@ -321,7 +321,7 @@ describe('NativeSimctl integration', () => {
       });
 
       it('rejects setDarwinNotificationState with an out-of-range bigint', async () => {
-        const name = 'com.appium.coresim.test.state.invalid';
+        const name = 'io.appium.coresim.test.state.invalid';
         await assert.rejects(() => sim.setDarwinNotificationState(device!.udid, name, -1n));
         await assert.rejects(() => sim.setDarwinNotificationState(device!.udid, name, 2n ** 64n));
       });
@@ -374,7 +374,7 @@ describe('NativeSimctl integration', () => {
         // this addon (or this test) can work around. The long hang before the eventual rejection
         // is itself part of that bug, so it's bounded here rather than spent for real each run.
         const PUSH_TIMEOUT_MS = 30000;
-        const pushed = sim.pushNotification(device!.udid, 'com.appium.coresim.doesnotexist', {aps: {alert: 'hi'}}).then(
+        const pushed = sim.pushNotification(device!.udid, 'io.appium.coresim.doesnotexist', {aps: {alert: 'hi'}}).then(
           () => 'delivered' as const,
           (err) => {
             if (err instanceof NativeSimOperationError && err.domain === 'UNErrorDomain' && err.code === 2003) {
@@ -398,7 +398,7 @@ describe('NativeSimctl integration', () => {
       });
 
       it('grants, revokes, and resets a privacy permission, verified against the simulator TCC database', async () => {
-        const bundleId = 'com.appium.coresim.doesnotexist';
+        const bundleId = 'io.appium.coresim.doesnotexist';
 
         await sim.grantPermission(device!.udid, 'camera', bundleId);
         assert.strictEqual(await readTCCGranted(device!.udid, 'kTCCServiceCamera', bundleId), true);
@@ -411,7 +411,7 @@ describe('NativeSimctl integration', () => {
       });
 
       it('reads a privacy permission status through the same grant/revoke/reset lifecycle', async () => {
-        const bundleId = 'com.appium.coresim.doesnotexist';
+        const bundleId = 'io.appium.coresim.doesnotexist';
 
         assert.strictEqual(await sim.getPermission(device!.udid, 'contacts', bundleId), 'unset');
 
@@ -426,7 +426,7 @@ describe('NativeSimctl integration', () => {
       });
 
       it('grants, revokes, and resets faceid and usertracking, two services with no dedicated setter', async () => {
-        const bundleId = 'com.appium.coresim.doesnotexist';
+        const bundleId = 'io.appium.coresim.doesnotexist';
 
         for (const service of ['faceid', 'usertracking'] as const) {
           await sim.grantPermission(device!.udid, service, bundleId);
@@ -441,7 +441,7 @@ describe('NativeSimctl integration', () => {
       });
 
       it('grants "limited" (selected photos) access, exclusively for the photos service', async () => {
-        const bundleId = 'com.appium.coresim.doesnotexist';
+        const bundleId = 'io.appium.coresim.doesnotexist';
 
         await sim.grantPermission(device!.udid, 'photos', bundleId, 'limited');
         assert.strictEqual(await sim.getPermission(device!.udid, 'photos', bundleId), 'limited');
@@ -860,6 +860,104 @@ describe('NativeSimctl integration', () => {
           audioUnits.map((u) => u.sequence),
           audioUnits.map((_, i) => i),
         );
+      });
+
+      it('streams JPEG frames in real time, each independently decodable', async (t) => {
+        let stream: Awaited<ReturnType<typeof sim.startJpegStream>>;
+        try {
+          stream = await sim.startJpegStream(device!.udid, {fps: 10});
+        } catch (err) {
+          if (err instanceof NativeSimUnavailableError) {
+            return t.skip(`JPEG streaming unavailable on this CoreSimulator: ${err.message}`);
+          }
+          throw err;
+        }
+
+        // Toggling appearance repaints the screen, forcing frames beyond the initial one.
+        let dark = 0;
+        const wiggle = setInterval(() => {
+          dark = 1 - dark;
+          sim.setAppearance(device!.udid, dark).catch(() => {});
+        }, 150);
+
+        const controller = new AbortController();
+        const frames: Array<{data: Buffer; sequence: number}> = [];
+        const timeout = setTimeout(() => controller.abort(), 15000);
+        try {
+          for await (const frame of stream.frames(controller.signal)) {
+            frames.push(frame);
+            if (frames.length >= 2) {
+              controller.abort();
+              break;
+            }
+          }
+        } finally {
+          clearTimeout(timeout);
+          clearInterval(wiggle);
+          await stream.stop();
+          await stream.stop(); // idempotent
+        }
+
+        assert.ok(frames.length > 0, 'expected at least one JPEG frame');
+        for (const frame of frames) {
+          assert.deepStrictEqual(frame.data.subarray(0, 3), Buffer.from([0xff, 0xd8, 0xff]));
+        }
+        assert.deepStrictEqual(
+          frames.map((f) => f.sequence),
+          frames.map((_, i) => i),
+        );
+
+        await assert.rejects(sim.startJpegStream(device!.udid, {displayId: 'not-a-real-display-id'}));
+      });
+
+      it('respects displayId and quality on a JPEG stream', async (t) => {
+        const displays = await sim.getDisplays(device!.udid);
+        const targetDisplay = displays.find((d) => d.isMain) ?? displays[0];
+        assert.ok(targetDisplay, 'expected at least one renderable display');
+
+        async function firstFrame(quality: number): Promise<Buffer> {
+          const stream = await sim.startJpegStream(device!.udid, {displayId: targetDisplay.id, fps: 10, quality});
+          try {
+            const {value} = await stream.frames().next();
+            assert.ok(value, 'expected a frame');
+            return value.data;
+          } finally {
+            await stream.stop();
+          }
+        }
+
+        let lowQuality: Buffer;
+        try {
+          lowQuality = await firstFrame(10);
+        } catch (err) {
+          if (err instanceof NativeSimUnavailableError) {
+            return t.skip(`JPEG streaming unavailable on this CoreSimulator: ${err.message}`);
+          }
+          throw err;
+        }
+        const highQuality = await firstFrame(95);
+        assert.ok(lowQuality.length < highQuality.length, 'lower JPEG quality should encode smaller');
+      });
+
+      it('does not crash on exit after stop() while the JPEG stream wrapper is still referenced', async (t) => {
+        const childScript = fileURLToPath(new URL('./jpeg-abort-delivery-child.js', import.meta.url));
+        try {
+          // See the identical video-stream regression test's own comment on this generous timeout.
+          await execFileAsync(process.execPath, [childScript, device!.udid], {timeout: IS_CI ? 120000 : 20000});
+        } catch (err) {
+          const execErr = err as {code?: number | string; signal?: string | null; killed?: boolean; stderr?: string};
+          if (execErr.code === 2) {
+            return t.skip('JPEG streaming unavailable on this CoreSimulator');
+          }
+          if (execErr.killed && execErr.signal === 'SIGTERM') {
+            return t.skip(`child process did not finish within the timeout — too slow to test here, not a crash`);
+          }
+          throw new Error(
+            `child process exited abnormally (code=${execErr.code}, signal=${execErr.signal}) — see CLAUDE.md's ` +
+              `TsfnReleaseGuard note if this is a crash, not just a timeout:\n${execErr.stderr}`,
+            {cause: err},
+          );
+        }
       });
 
       if (isIOSRuntime(fixture.runtimeIdentifier)) {

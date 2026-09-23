@@ -1,5 +1,6 @@
 #pragma once
 
+#import <CoreGraphics/CoreGraphics.h>
 #import <Foundation/Foundation.h>
 
 namespace coresim {
@@ -23,6 +24,13 @@ id ResolveCaptureDisplay(id device, NSString* displayId, NSError** error);
 id CurrentDisplaySurface(id descriptor);
 
 enum class ScreenshotFormat { kPNG, kJPEG };
+
+// Encodes `cgImage` via ImageIO into `format` — the same CGImageDestination-based encode
+// CaptureScreenshot uses for its own final step, exposed for a caller that already has a
+// CGImageRef from its own CIContext (e.g. JpegStreamSession's persistent one — see
+// sim_jpeg_stream.mm). `jpegQualityPercent` semantics match CaptureScreenshot's own parameter of
+// the same name. Returns nil (and sets *error) on encode failure. Does not release `cgImage`.
+NSData* EncodeImage(CGImageRef cgImage, ScreenshotFormat format, NSNumber* jpegQualityPercent, NSError** error);
 
 // Captures a display as an image, reading the same in-process framebuffer surface `simctl io
 // <udid> screenshot` itself reads (see sim_screenshot.mm) — no temp file, no subprocess.

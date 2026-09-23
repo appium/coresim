@@ -31,6 +31,7 @@
 #include "native/objc_runtime.h"
 #include "native/sim_device.h"
 #include "native/sim_device_set.h"
+#include "native/sim_jpeg_stream.h"
 #include "native/sim_pasteboard.h"
 #include "native/sim_process.h"
 #include "native/sim_screenshot.h"
@@ -99,7 +100,7 @@ NSError* MakeDescriptorError(NSString* which, int savedErrno) {
 }
 
 NSError* MakeSpawnPathError(NSString* message) {
-  return [NSError errorWithDomain:@"com.appium.coresim.spawn" code:1 userInfo:@{NSLocalizedDescriptionKey : message}];
+  return [NSError errorWithDomain:@"io.appium.coresim.spawn" code:1 userInfo:@{NSLocalizedDescriptionKey : message}];
 }
 
 // Standard bin dirs to search, in order, when `path` is a bare command name (no `/`) — mirrors
@@ -258,9 +259,11 @@ struct AddonInstanceData {
   Napi::FunctionReference avStreamConstructor;
   Napi::FunctionReference avRecordingConstructor;
   Napi::FunctionReference privateRecordingConstructor;
+  Napi::FunctionReference jpegStreamConstructor;
   ActiveSessionRegistry<coresim::VideoStreamSession> activeVideoStreams;
   ActiveSessionRegistry<coresim::AVStreamSession> activeAVStreams;
   ActiveSessionRegistry<coresim::AVRecordingSession> activeAVRecordings;
+  ActiveSessionRegistry<coresim::JpegStreamSession> activeJpegStreams;
 };
 
 }  // namespace
@@ -324,6 +327,58 @@ Napi::Object NativeVideoStream::NewInstance(Napi::Env env, std::shared_ptr<cores
   Napi::Function ctor = env.GetInstanceData<AddonInstanceData>()->videoStreamConstructor.Value();
   return ctor.New({Napi::External<std::shared_ptr<coresim::VideoStreamSession>>::New(
       env, boxed, [](Napi::Env /*env*/, std::shared_ptr<coresim::VideoStreamSession>* data) { delete data; })});
+}
+
+// Wraps a live coresim::JpegStreamSession — same shape as NativeVideoStream minus
+// `requestKeyFrame()` (meaningless here: every JPEG frame is already independently decodable, see
+// sim_jpeg_stream.h). Frames/errors are delivered live via the callbacks passed directly to
+// startJpegStream, not through this object — it only exposes `stop()`.
+class NativeJpegStream : public Napi::ObjectWrap<NativeJpegStream> {
+ public:
+  static void Init(Napi::Env env);
+  static Napi::Object NewInstance(Napi::Env env, std::shared_ptr<coresim::JpegStreamSession> session);
+  explicit NativeJpegStream(const Napi::CallbackInfo& info);
+
+ private:
+  std::shared_ptr<coresim::JpegStreamSession> session_;
+
+  Napi::Value Stop(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    auto session = session_;
+    return RunAsyncVoid(env, [session]() { session->Stop(); });
+  }
+
+  // See NativeVideoStream::Finalize for why this hands off to a background queue.
+  void Finalize(Napi::Env env) override {
+    auto session = std::move(session_);
+    if (session) {
+      env.GetInstanceData<AddonInstanceData>()->activeJpegStreams.Deregister(session);
+      dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        session->Stop();
+      });
+    }
+  }
+};
+
+NativeJpegStream::NativeJpegStream(const Napi::CallbackInfo& info) : Napi::ObjectWrap<NativeJpegStream>(info) {
+  auto* boxed = info[0].As<Napi::External<std::shared_ptr<coresim::JpegStreamSession>>>().Data();
+  session_ = *boxed;
+  info.Env().GetInstanceData<AddonInstanceData>()->activeJpegStreams.Register(session_);
+}
+
+void NativeJpegStream::Init(Napi::Env env) {
+  Napi::Function ctor = DefineClass(env, "NativeJpegStream",
+                                    {
+                                        InstanceMethod<&NativeJpegStream::Stop>("stop"),
+                                    });
+  env.GetInstanceData<AddonInstanceData>()->jpegStreamConstructor = Napi::Persistent(ctor);
+}
+
+Napi::Object NativeJpegStream::NewInstance(Napi::Env env, std::shared_ptr<coresim::JpegStreamSession> session) {
+  auto* boxed = new std::shared_ptr<coresim::JpegStreamSession>(std::move(session));
+  Napi::Function ctor = env.GetInstanceData<AddonInstanceData>()->jpegStreamConstructor.Value();
+  return ctor.New({Napi::External<std::shared_ptr<coresim::JpegStreamSession>>::New(
+      env, boxed, [](Napi::Env /*env*/, std::shared_ptr<coresim::JpegStreamSession>* data) { delete data; })});
 }
 
 // Wraps a live coresim::AVStreamSession — the combined-AV counterpart to NativeVideoStream above,
@@ -473,7 +528,7 @@ class NativePrivateRecordingHandle : public Napi::ObjectWrap<NativePrivateRecord
     id device = device_;
     return RunAsyncVoid(env, [device]() {
       dispatch_semaphore_t sema = dispatch_semaphore_create(0);
-      dispatch_queue_t queue = dispatch_queue_create("com.appium.coresim.stopRecordVideo", DISPATCH_QUEUE_SERIAL);
+      dispatch_queue_t queue = dispatch_queue_create("io.appium.coresim.stopRecordVideo", DISPATCH_QUEUE_SERIAL);
       __block NSError* capturedError = nil;
       NSError* resolveError = nil;
       BOOL ok = coresim::StopVideoRecording(
@@ -573,7 +628,7 @@ class NativeDevice : public Napi::ObjectWrap<NativeDevice> {
     NSDictionary* options = OptionsArg(info, 0);
     return RunAsyncVoid(env, [device, options]() {
       dispatch_semaphore_t sema = dispatch_semaphore_create(0);
-      dispatch_queue_t queue = dispatch_queue_create("com.appium.coresim.boot", DISPATCH_QUEUE_SERIAL);
+      dispatch_queue_t queue = dispatch_queue_create("io.appium.coresim.boot", DISPATCH_QUEUE_SERIAL);
       __block NSError* capturedError = nil;
       BootAsync(device, options, queue, ^(NSError* error) {
         capturedError = error;
@@ -1069,6 +1124,29 @@ class NativeDevice : public Napi::ObjectWrap<NativeDevice> {
     return coresim::VideoEncoderOptions{codec, displayId, fps, bitrate};
   }
 
+  // `quality`/`displayId`/`fps` are this addon's own options, not a CoreSimulator options
+  // dictionary — the TS layer (commands/jpeg-stream.ts) already constrains them, so anything else
+  // (including absent) is just defaulted here rather than validated again (mirrors Screenshot's
+  // identical comment above).
+  static coresim::JpegStreamOptions ParseJpegStreamOptions(const Napi::CallbackInfo& info, size_t argIndex) {
+    NSString* displayId = nil;
+    double fps = 15.0;
+    NSNumber* jpegQualityPercent = nil;
+    if (info.Length() > argIndex && info[argIndex].IsObject()) {
+      Napi::Object options = info[argIndex].As<Napi::Object>();
+      if (options.Has("displayId") && options.Get("displayId").IsString()) {
+        displayId = @(options.Get("displayId").As<Napi::String>().Utf8Value().c_str());
+      }
+      if (options.Has("fps") && options.Get("fps").IsNumber()) {
+        fps = options.Get("fps").As<Napi::Number>().DoubleValue();
+      }
+      if (options.Has("quality") && options.Get("quality").IsNumber()) {
+        jpegQualityPercent = @(options.Get("quality").As<Napi::Number>().DoubleValue());
+      }
+    }
+    return coresim::JpegStreamOptions{displayId, fps, jpegQualityPercent};
+  }
+
   static bool OptionsWantAudio(const Napi::CallbackInfo& info, size_t argIndex) {
     return info.Length() > argIndex && info[argIndex].IsObject() && info[argIndex].As<Napi::Object>().Has("audio") &&
            info[argIndex].As<Napi::Object>().Get("audio").IsBoolean() &&
@@ -1132,7 +1210,7 @@ class NativeDevice : public Napi::ObjectWrap<NativeDevice> {
         env,
         [device, displayId, mask, assetWriterOutputSettings, outputFile]() -> id {
           dispatch_semaphore_t sema = dispatch_semaphore_create(0);
-          dispatch_queue_t queue = dispatch_queue_create("com.appium.coresim.recordVideo", DISPATCH_QUEUE_SERIAL);
+          dispatch_queue_t queue = dispatch_queue_create("io.appium.coresim.recordVideo", DISPATCH_QUEUE_SERIAL);
           __block NSError* capturedError = nil;
           NSError* resolveError = nil;
           BOOL ok = coresim::StartVideoRecording(
@@ -1380,6 +1458,81 @@ class NativeDevice : public Napi::ObjectWrap<NativeDevice> {
         });
   }
 
+  // Real-time JPEG frame stream via ImageIO (see sim_jpeg_stream.mm) — a client-side MJPEG stream
+  // is just this frame sequence multipart-boundary-framed over HTTP, which coresim itself has no
+  // opinion about. Same TSFN/registry/teardown shape as StartVideoStream's audio-less branch,
+  // minus keyframes/resync (every JPEG frame is independently decodable).
+  Napi::Value StartJpegStream(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    id device = device_;
+    coresim::JpegStreamOptions options = ParseJpegStreamOptions(info, 0);
+    Napi::Function onFrame = info[1].As<Napi::Function>();
+    Napi::Function onError = info[2].As<Napi::Function>();
+
+    // See StartVideoStream's identical comment on accessUnitTsfn — bounded so a slow-draining
+    // consumer throttles the encoder via BlockingCall instead of letting queued frames grow
+    // unbounded.
+    static constexpr size_t kFrameQueueSize = 60;
+    Napi::ThreadSafeFunction frameTsfn =
+        Napi::ThreadSafeFunction::New(env, onFrame, "coresim jpeg stream frame", kFrameQueueSize, 1);
+    Napi::ThreadSafeFunction errorTsfn = Napi::ThreadSafeFunction::New(env, onError, "coresim jpeg stream error", 0, 1);
+    auto tsfnGuard = std::make_shared<TsfnReleaseGuard>();
+
+    return RunAsync<std::shared_ptr<coresim::JpegStreamSession>>(
+        env,
+        [device, options, frameTsfn, errorTsfn, tsfnGuard]() mutable -> std::shared_ptr<coresim::JpegStreamSession> {
+          auto session = std::make_shared<coresim::JpegStreamSession>(
+              device, options,
+              [frameTsfn](coresim::JpegFrame frame) mutable {
+                frameTsfn.BlockingCall([frame = std::move(frame)](Napi::Env env, Napi::Function jsCallback) mutable {
+                  // See StartVideoStream's identical comment on why this is wrapped in try/catch.
+                  try {
+                    Napi::Object obj = Napi::Object::New(env);
+                    obj.Set("data", Napi::Buffer<uint8_t>::Copy(env, frame.data.data(), frame.data.size()));
+                    obj.Set("sequence", Napi::Number::New(env, static_cast<double>(frame.sequence)));
+                    obj.Set("timestampMicros", Napi::Number::New(env, static_cast<double>(frame.timestampMicros)));
+                    jsCallback.Call({obj});
+                  } catch (...) {
+                  }
+                });
+              },
+              [errorTsfn](NSError* error) mutable {
+                NSErrorException exception(error);
+                errorTsfn.BlockingCall([exception](Napi::Env env, Napi::Function jsCallback) {
+                  try {
+                    jsCallback.Call({NSErrorExceptionToJsError(env, exception).Value()});
+                  } catch (...) {
+                  }
+                });
+              },
+              [frameTsfn, errorTsfn, tsfnGuard]() mutable {
+                ReleaseTsfnOnce(tsfnGuard, [&]() mutable {
+                  frameTsfn.Release();
+                  errorTsfn.Release();
+                });
+              },
+              [frameTsfn, errorTsfn, tsfnGuard]() mutable {
+                ReleaseTsfnOnce(tsfnGuard, [&]() mutable {
+                  frameTsfn.Abort();
+                  errorTsfn.Abort();
+                });
+              });
+          try {
+            session->Start();
+          } catch (...) {
+            ReleaseTsfnOnce(tsfnGuard, [&]() mutable {
+              frameTsfn.Release();
+              errorTsfn.Release();
+            });
+            throw;
+          }
+          return session;
+        },
+        [](Napi::Env env, std::shared_ptr<coresim::JpegStreamSession> session) -> Napi::Value {
+          return NativeJpegStream::NewInstance(env, session);
+        });
+  }
+
   // Option dictionary keys for `spawnWithPath:options:...` aren't part of the ObjC runtime
   // metadata this addon resolves selectors from (they're string literals inside CoreSimulator's
   // own implementation) — confirmed by resolving each `SimDeviceSpawnKey*` symbol at runtime via
@@ -1567,6 +1720,7 @@ void NativeDevice::Init(Napi::Env env) {
                       InstanceMethod<&NativeDevice::GetDisplays>("getDisplays"),
                       InstanceMethod<&NativeDevice::StartVideoRecording>("startVideoRecording"),
                       InstanceMethod<&NativeDevice::StartVideoStream>("startVideoStream"),
+                      InstanceMethod<&NativeDevice::StartJpegStream>("startJpegStream"),
                       InstanceMethod<&NativeDevice::Spawn>("spawn"),
                   });
   env.GetInstanceData<AddonInstanceData>()->deviceConstructor = Napi::Persistent(ctor);
@@ -1818,6 +1972,7 @@ void CleanupActiveSessions(AddonInstanceData* instanceData) {
   };
   instanceData->activeVideoStreams.StopAll(stopStream);
   instanceData->activeAVStreams.StopAll(stopStream);
+  instanceData->activeJpegStreams.StopAll(stopStream);
   instanceData->activeAVRecordings.StopAll([](auto& session) {
     dispatch_semaphore_t sema = dispatch_semaphore_create(0);
     session->Stop([sema](NSError*) { dispatch_semaphore_signal(sema); });
@@ -1850,6 +2005,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
   NativeAVStream::Init(env);
   NativeAVRecording::Init(env);
   NativePrivateRecordingHandle::Init(env);
+  NativeJpegStream::Init(env);
   exports.Set("sharedServiceContext", Napi::Function::New(env, SharedServiceContextBinding));
   exports.Set("frameworkVersion", Napi::Function::New(env, FrameworkVersionBinding));
   exports.Set("flushActiveSessions", Napi::Function::New(env, FlushActiveSessionsBinding));

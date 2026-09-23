@@ -20,7 +20,8 @@
         "src/native/sim_screenshot.mm",
         "src/native/sim_video_recording.mm",
         "src/native/video_encoder.mm",
-        "src/native/sim_video_stream.mm"
+        "src/native/sim_video_stream.mm",
+        "src/native/sim_jpeg_stream.mm"
       ],
       "include_dirs": [
         "<!@(node -p \"require('node-addon-api').include\")"

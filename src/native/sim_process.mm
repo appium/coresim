@@ -13,7 +13,7 @@ namespace coresim {
 
 namespace {
 
-NSString* const kProcessErrorDomain = @"com.appium.coresim.Process";
+NSString* const kProcessErrorDomain = @"io.appium.coresim.Process";
 NSString* const kWebInspectorSocketSuffix = @"com.apple.webinspectord_sim.socket";
 
 NSError* MakeError(NSInteger code, NSString* message) {

@@ -69,7 +69,7 @@ namespace coresim {
 
 namespace {
 
-NSString* const kPasteboardErrorDomain = @"com.appium.coresim.Pasteboard";
+NSString* const kPasteboardErrorDomain = @"io.appium.coresim.Pasteboard";
 
 // The UTI both pasteboard mechanisms below exchange plain text under.
 NSString* const kPlainTextUTI = @"public.utf8-plain-text";
@@ -166,7 +166,7 @@ NSString* PullPasteboardStringModern(id device, NSError** error) {
     CoresimPasteboardDelegate* delegate = [CoresimPasteboardDelegate new];
     delegate.activeSema = dispatch_semaphore_create(0);
     delegate.appliedSema = dispatch_semaphore_create(0);
-    dispatch_queue_t queue = dispatch_queue_create("com.appium.coresim.pasteboard.pull", DISPATCH_QUEUE_SERIAL);
+    dispatch_queue_t queue = dispatch_queue_create("io.appium.coresim.pasteboard.pull", DISPATCH_QUEUE_SERIAL);
 
     id interface = ConnectPasteboardInterface(device, pasteboard, delegate, queue);
     SafeInvoke([&] {
@@ -200,7 +200,7 @@ BOOL PushPasteboardStringModern(id device, NSString* content, NSError** error) {
     CoresimPasteboardDelegate* delegate = [CoresimPasteboardDelegate new];
     delegate.activeSema = dispatch_semaphore_create(0);
     delegate.appliedSema = dispatch_semaphore_create(0);
-    dispatch_queue_t queue = dispatch_queue_create("com.appium.coresim.pasteboard.push", DISPATCH_QUEUE_SERIAL);
+    dispatch_queue_t queue = dispatch_queue_create("io.appium.coresim.pasteboard.push", DISPATCH_QUEUE_SERIAL);
 
     id interface = ConnectPasteboardInterface(device, pasteboard, delegate, queue);
     SafeInvoke([&] {

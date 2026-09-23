@@ -146,6 +146,18 @@ toolchain (`make` and `xcodebuild`).
   there would deadlock). `onEnd`, fired once from whichever path wins, is the only safe point to
   release the N-API `ThreadSafeFunction`s. Independent of `startVideoRecording` — any number of
   streams and one recording can run concurrently.
+- **JPEG streaming (`startJpegStream`) reuses `startVideoStream`'s IOSurface-poll/GCD-timer/seed-
+  check skeleton but drops everything codec-specific.** `sim_jpeg_stream.mm` JPEG-encodes each
+  changed frame synchronously, on the polling queue itself, via the same ImageIO `CGImageDestination`
+  path `getScreenshot`'s `format: 'jpeg'` uses — except through one persistent `CIContext` (created
+  once, not per frame/call) instead of `CaptureScreenshot`'s deliberately one-shot context (see
+  `sim_screenshot.mm`'s own comment). Since every JPEG frame is independently decodable, there's no
+  keyframe/resync concept, and — unlike `VideoStreamSession`, whose `VTCompressionSession` callback
+  can fire on another thread — no cross-thread "error reported elsewhere, picked up next tick"
+  handoff either: an encode failure is just an `NSError**` out-param, handled inline. Shares the
+  same `TsfnReleaseGuard`/`ActiveSessionRegistry`/exit-cleanup wiring in `coresim.mm` as
+  `startVideoStream`. Produces a plain frame sequence, not a video bitstream — building an MJPEG
+  (`multipart/x-mixed-replace`) HTTP stream out of it is left entirely to the caller.
 - **A live `startVideoStream` needs two separate defenses against `worker.terminate()`.** An
   `env.AddCleanupHook` in `coresim.mm` stops every registered `VideoStreamSession` before Node
   force-releases the Environment's TSFNs — but a callback *already queued* on a TSFN (frames piled

@@ -9,7 +9,7 @@ namespace coresim {
 
 namespace {
 
-NSString* const kTCCErrorDomain = @"com.appium.coresim.TCCPrivacy";
+NSString* const kTCCErrorDomain = @"io.appium.coresim.TCCPrivacy";
 
 NSError* MakeError(int code, NSString* message) {
   return [NSError errorWithDomain:kTCCErrorDomain code:code userInfo:@{NSLocalizedDescriptionKey : message}];

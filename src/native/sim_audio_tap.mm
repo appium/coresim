@@ -11,7 +11,7 @@
 
 namespace coresim {
 
-NSString* const kAudioTapErrorDomain = @"com.appium.coresim.AudioTap";
+NSString* const kAudioTapErrorDomain = @"io.appium.coresim.AudioTap";
 
 namespace {
 
@@ -66,7 +66,7 @@ class AudioTapSession::Impl {
   Impl(NSString* udid, std::function<void(const AudioBufferList*, const AudioTimeStamp*)> onBuffer,
        std::function<void(NSError*)> onError, std::function<void()> onEnd)
       : udid_(udid), onBuffer_(std::move(onBuffer)), onError_(std::move(onError)), onEnd_(std::move(onEnd)) {
-    queue_ = dispatch_queue_create("com.appium.coresim.audioTap", DISPATCH_QUEUE_SERIAL);
+    queue_ = dispatch_queue_create("io.appium.coresim.audioTap", DISPATCH_QUEUE_SERIAL);
   }
 
   ~Impl() { Stop(); }
@@ -154,7 +154,7 @@ class AudioTapSession::Impl {
     NSDictionary* aggregateDescription = @{
       @(kAudioAggregateDeviceNameKey) : [NSString stringWithFormat:@"coresim-audio-%@", udid_],
       @(kAudioAggregateDeviceUIDKey) :
-          [NSString stringWithFormat:@"com.appium.coresim.audio.%@.%@", udid_, uuid.UUIDString],
+          [NSString stringWithFormat:@"io.appium.coresim.audio.%@.%@", udid_, uuid.UUIDString],
       @(kAudioAggregateDeviceIsPrivateKey) : @YES,
       @(kAudioAggregateDeviceTapAutoStartKey) : @NO,
       @(kAudioAggregateDeviceTapListKey) : @[ @{
