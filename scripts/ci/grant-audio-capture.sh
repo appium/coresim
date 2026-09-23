@@ -33,7 +33,12 @@ seed_db() {
   if [[ ! -f "$db" ]]; then
     return 0
   fi
-  sudo sqlite3 "$db" <<SQL
+  # tccd itself has this database open and can hold a brief lock — busy_timeout makes sqlite3
+  # wait for it instead of failing immediately with "database is locked"; the outer retry loop is
+  # extra insurance for a lock that outlasts even that.
+  local attempt
+  for attempt in 1 2 3; do
+    if sudo sqlite3 -cmd 'PRAGMA busy_timeout=5000' "$db" <<SQL
 INSERT OR REPLACE INTO access
   (service, client, client_type, auth_value, auth_reason, auth_version,
    indirect_object_identifier, flags, last_modified)
@@ -41,12 +46,25 @@ VALUES
   ('kTCCServiceAudioCapture', '${escaped_path}', 1, 2, 3, 1,
    'UNUSED', 0, CAST(strftime('%s', 'now') AS INTEGER));
 SQL
+    then
+      return 0
+    fi
+    echo "::warning::grant-audio-capture.sh: sqlite3 write to '$db' failed (attempt $attempt/3), retrying" >&2
+    sleep 2
+  done
+  echo "::warning::grant-audio-capture.sh: giving up writing to '$db' after 3 attempts — audio-capture tests will fall back to t.skip()" >&2
+  return 1
 }
 
-seed_db "/Library/Application Support/com.apple.TCC/TCC.db"
-seed_db "$HOME/Library/Application Support/com.apple.TCC/TCC.db"
+granted=true
+seed_db "/Library/Application Support/com.apple.TCC/TCC.db" || granted=false
+seed_db "$HOME/Library/Application Support/com.apple.TCC/TCC.db" || granted=false
 
 sudo launchctl kickstart -k system/com.apple.tccd 2>/dev/null || sudo pkill -HUP tccd || true
 pkill -HUP tccd 2>/dev/null || true # the per-user tccd instance, distinct from the system one above
 
-echo "Granted kTCCServiceAudioCapture to $target_path"
+if [[ "$granted" == true ]]; then
+  echo "Granted kTCCServiceAudioCapture to $target_path"
+else
+  echo "::warning::grant-audio-capture.sh: at least one TCC database write failed — audio-capture tests will fall back to t.skip()" >&2
+fi
