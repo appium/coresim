@@ -1,3 +1,9 @@
+## [1.6.0](https://github.com/appium/coresim/compare/v1.5.0...v1.6.0) (2026-09-23)
+
+### Features
+
+* add optional audio capture to video recording and streaming  ([#18](https://github.com/appium/coresim/issues/18)) ([e634078](https://github.com/appium/coresim/commit/e634078669db724a676bf95fa074a89d3ac5a9c8))
+
 ## [1.5.0](https://github.com/appium/coresim/compare/v1.4.0...v1.5.0) (2026-09-22)
 
 ### Features
