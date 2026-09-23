@@ -597,6 +597,31 @@ describe('NativeSimctl integration', () => {
         }
       });
 
+      it('stopVideoRecording({force: true}) releases the recording through the real class, same as a plain stop', async (t) => {
+        const outputFile = path.join(os.tmpdir(), `coresim-video-test-force-${Date.now()}-${process.pid}.mp4`);
+        try {
+          try {
+            await sim.startVideoRecording(device!.udid, outputFile);
+          } catch (err) {
+            if (err instanceof NativeSimUnavailableError) {
+              return t.skip(`video recording unavailable on this CoreSimulator: ${err.message}`);
+            }
+            throw err;
+          }
+          // Wiring smoke test for the {force: true} option end-to-end through NativeSimctl's real
+          // mixin — coresim-stuck-video-recording.md's stuck-entry scenario (a failed native stop)
+          // is instead exercised against a fake handle in test/unit/video-recording.spec.ts, since
+          // nothing here can deterministically force a real CoreSimulator stop call to fail.
+          await sim.stopVideoRecording(device!.udid, {force: true});
+          assert.strictEqual(await sim.isVideoRecording(device!.udid), false);
+
+          const stats = await fs.promises.stat(outputFile);
+          assert.ok(stats.size > 0, 'expected a non-empty recorded video file');
+        } finally {
+          await fs.promises.rm(outputFile, {force: true});
+        }
+      });
+
       it('records a video with an explicit codec, mask, and displayId', async (t) => {
         if (!(await hasFfmpeg())) {
           return t.skip('ffmpeg/ffprobe not installed');

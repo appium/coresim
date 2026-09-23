@@ -3,13 +3,13 @@ import path from 'node:path';
 import {logger} from '@appium/support';
 
 import type {NativeSimctl} from '../native-simctl.js';
-import type {NativeVideoRecordingHandle, VideoRecordingOptions} from '../types.js';
+import type {NativeVideoRecordingHandle, StopVideoRecordingOptions, VideoRecordingOptions} from '../types.js';
 import {runCatchingAsync, toTypedError} from '../utils/index.js';
 
 declare module '../native-simctl.js' {
   interface NativeSimctl {
     startVideoRecording(udid: string, outputFile: string, options?: VideoRecordingOptions): Promise<void>;
-    stopVideoRecording(udid: string): Promise<void>;
+    stopVideoRecording(udid: string, options?: StopVideoRecordingOptions): Promise<void>;
     isVideoRecording(udid: string): Promise<boolean>;
   }
 }
@@ -112,10 +112,23 @@ export async function startVideoRecording(
  * device-lookup error — leaves the recording tracked as still active so a retry can reach the
  * native call rather than the caller losing the ability to stop it at all.
  *
+ * That retryability is a liability if nothing ever *does* retry — e.g. a best-effort teardown path
+ * that must not throw, so it logs a failed stop and moves on — since without `options.force` there
+ * is no other way to release the entry, permanently blocking a new `startVideoRecording` for this
+ * device. Pass `options.force: true` in that situation: it still attempts the native stop (so the
+ * encoder/file gets a chance to finalize cleanly) but releases the entry unconditionally afterward
+ * and never rejects, even if that attempt failed — understand that this can leave a native
+ * resource dangling if the stop genuinely never lands.
+ *
  * @param udid — UDID of the device to stop recording
+ * @param options — `force` (see above)
  * @throws {Error} if no recording is currently in progress for this device
  */
-export async function stopVideoRecording(this: NativeSimctl, udid: string): Promise<void> {
+export async function stopVideoRecording(
+  this: NativeSimctl,
+  udid: string,
+  options: StopVideoRecordingOptions = {},
+): Promise<void> {
   const key = udid.toLowerCase();
   const state = activeRecordings.get(key);
   if (!state) {
@@ -134,13 +147,20 @@ export async function stopVideoRecording(this: NativeSimctl, udid: string): Prom
   try {
     await stopPromise;
   } catch (e) {
-    // Only clear our own attempt, and only if it's still the current one — a future call must be
-    // able to retry the native stop rather than replaying this same rejection forever, but must
-    // not clobber a newer attempt another concurrent caller may have already started instead.
+    // Only clear our own attempt, and only if it's still the current one — a future (non-forced)
+    // call must be able to retry the native stop rather than replaying this same rejection
+    // forever, but must not clobber a newer attempt another concurrent caller may have already
+    // started instead.
     if (state.stop === stopPromise) {
       state.stop = undefined;
     }
-    throw e;
+    if (!options.force) {
+      throw e;
+    }
+    log.warn(
+      `Force-releasing video recording bookkeeping for device '${udid}' despite a failed native stop: ` +
+        `${toTypedError(e).stack ?? e}`,
+    );
   }
   if (activeRecordings.get(key) === state) {
     activeRecordings.delete(key);

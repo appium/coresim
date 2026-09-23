@@ -21,6 +21,7 @@ export {
   type SimProcessInfo,
   type SimRuntimeInfo,
   type SpawnOptions,
+  type StopVideoRecordingOptions,
   type VideoAccessUnit,
   type VideoRecordingOptions,
   type VideoStreamOptions,
