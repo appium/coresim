@@ -1,3 +1,9 @@
+## [1.7.0](https://github.com/appium/coresim/compare/v1.6.0...v1.7.0) (2026-09-23)
+
+### Features
+
+* add force option to stopVideoRecording ([#19](https://github.com/appium/coresim/issues/19)) ([1b756ce](https://github.com/appium/coresim/commit/1b756ce3d41ad35dca0f7448de82715570e6ce60))
+
 ## [1.6.0](https://github.com/appium/coresim/compare/v1.5.0...v1.6.0) (2026-09-23)
 
 ### Features
