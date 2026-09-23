@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <utility>
 #include <vector>
 
 #include "monotonic_clock.h"
@@ -226,5 +227,44 @@ AudioEncoder::~AudioEncoder() = default;
 void AudioEncoder::EncodePCM(const AudioBufferList* data, const AudioTimeStamp* time) { impl_->EncodePCM(data, time); }
 
 CMFormatDescriptionRef AudioEncoder::OutputFormatDescription() const { return impl_->OutputFormatDescription(); }
+
+namespace {
+
+// ISO/IEC 13818-7 Table 35 — ADTS's 4-bit samplingFrequencyIndex. Falls back to 44.1kHz (index 4)
+// for a rate outside this fixed table, which a real Core Audio device format should never hit.
+int ADTSSamplingFrequencyIndex(double sampleRate) {
+  static constexpr std::pair<int, int> kIndexByRate[] = {{96000, 0},  {88200, 1}, {64000, 2}, {48000, 3}, {44100, 4},
+                                                         {32000, 5},  {24000, 6}, {22050, 7}, {16000, 8}, {12000, 9},
+                                                         {11025, 10}, {8000, 11}, {7350, 12}};
+  int rounded = static_cast<int>(std::lround(sampleRate));
+  for (const auto& [rate, index] : kIndexByRate) {
+    if (rate == rounded) {
+      return index;
+    }
+  }
+  return 4;
+}
+
+}  // namespace
+
+void PrependADTSHeader(std::vector<uint8_t>& out, size_t aacFrameLength, const AudioStreamBasicDescription& format) {
+  // Field layout/values match FFmpeg's own ADTS writer (libavformat/adtsenc.c): MPEG-4 ID, AAC-LC
+  // profile, VBR buffer fullness (all 1s), one raw data block per ADTS frame.
+  size_t adtsFrameLength = aacFrameLength + 7;
+  int samplingFrequencyIndex = ADTSSamplingFrequencyIndex(format.mSampleRate);
+  int channelConfig = std::max<int>(1, static_cast<int>(format.mChannelsPerFrame));
+  constexpr int kAacLcProfile = 1;  // ADTS profile field = MPEG-4 Audio Object Type (2 for AAC-LC) minus 1
+
+  uint8_t header[7];
+  header[0] = 0xFF;
+  header[1] = 0xF1;
+  header[2] = static_cast<uint8_t>((kAacLcProfile << 6) | (samplingFrequencyIndex << 2) | ((channelConfig >> 2) & 0x1));
+  header[3] = static_cast<uint8_t>(((channelConfig & 0x3) << 6) | ((adtsFrameLength >> 11) & 0x3));
+  header[4] = static_cast<uint8_t>((adtsFrameLength >> 3) & 0xFF);
+  header[5] = static_cast<uint8_t>(((adtsFrameLength & 0x7) << 5) | 0x1F);
+  header[6] = 0xFC;
+
+  out.insert(out.end(), header, header + 7);
+}
 
 }  // namespace coresim

@@ -35,9 +35,11 @@ struct AVAccessUnit {
 // IMPORTANT: needs the host's "System Audio Recording Only" TCC permission — see sim_audio_tap.h.
 class AVStreamSession {
  public:
+  // `onAbortDelivery`, if set, is invoked by AbortDelivery() below — not called by this class on
+  // its own. See VideoStreamSession's identical parameter for why it exists.
   AVStreamSession(id device, NSString* udid, VideoEncoderOptions videoOptions,
                   std::function<void(AVAccessUnit)> onAccessUnit, std::function<void(NSError*)> onError,
-                  std::function<void()> onEnd);
+                  std::function<void()> onEnd, std::function<void()> onAbortDelivery = nullptr);
   ~AVStreamSession();
 
   AVStreamSession(const AVStreamSession&) = delete;
@@ -51,6 +53,10 @@ class AVStreamSession {
   // Idempotent; blocks until both encoders have fully stopped. Never call from inside
   // onAccessUnit/onError/onEnd — same queues this blocks on, so it would deadlock.
   void Stop();
+
+  // See VideoStreamSession::AbortDelivery — same contract, call before Stop() only when nothing
+  // else will drain the delivery queue concurrently.
+  void AbortDelivery();
 
   // Forces the next encoded video frame to be a keyframe — see VideoFrameEncoder::RequestKeyFrame.
   // No audio equivalent (every AAC-LC packet already self-decodable).

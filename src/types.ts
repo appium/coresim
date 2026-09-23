@@ -146,9 +146,12 @@ export interface VideoRecordingOptions {
   mask?: 'ignored' | 'alpha' | 'black';
   /**
    * Also capture the device's audio into the same file, muxed as a second track. Defaults to
-   * `false`. Needs the host's "System Audio Recording Only" privacy permission (System Settings >
-   * Privacy & Security) — see CLAUDE.md for why this can't be granted programmatically, and why a
-   * denial isn't a thrown error (it surfaces as a silent, audio-less/near-silent recording).
+   * `false`. Requires macOS 14.2+ (Core Audio process taps), the host's "System Audio Recording
+   * Only" privacy permission (System Settings > Privacy & Security — cannot be granted
+   * programmatically; a denial isn't a thrown error, it surfaces as a silent, audio-less/near-
+   * silent recording), a default audio output device on the host, and a booted device that has
+   * produced audio at least once. See the README's "Screen capture" section for the full
+   * requirements list and known failure modes.
    *
    * Like an explicit `fps`, this switches the implementation to this addon's own VideoToolbox +
    * Core Audio encoders instead of CoreSimulator's private recorder, which can't mux audio.
@@ -184,8 +187,8 @@ export interface VideoStreamOptions {
   bitrate?: number;
   /**
    * Also stream the device's audio, interleaved into the same `accessUnits()` sequence. Defaults
-   * to `false`. Needs the host's "System Audio Recording Only" privacy permission — see
-   * {@link VideoRecordingOptions.audio}'s identical doc comment for the full explanation.
+   * to `false`. Same requirements and failure modes as {@link VideoRecordingOptions.audio} — see
+   * its doc comment and the README's "Screen capture" section.
    */
   audio?: boolean;
 }
@@ -194,8 +197,10 @@ export interface VideoStreamOptions {
  * One encoded unit from `VideoStream.accessUnits()`, discriminated by `track`: a video unit
  * (Annex-B NAL units — a keyframe's `data` has parameter sets, SPS/PPS or VPS/SPS/PPS for HEVC,
  * prepended, so it's self-decodable alone) or, when {@link VideoStreamOptions.audio} was set, an
- * interleaved audio unit (a raw AAC-LC packet — always independently decodable, so `isKeyFrame` is
- * always `true`). Without `audio`, every unit has `track: 'video'`.
+ * interleaved audio unit (an ADTS-framed AAC-LC packet — the 7-byte ADTS header carries sample
+ * rate/channel count itself, so no separate decoder-config exchange is needed; always
+ * independently decodable, so `isKeyFrame` is always `true`). Without `audio`, every unit has
+ * `track: 'video'`.
  */
 export interface VideoAccessUnit {
   track: 'video' | 'audio';

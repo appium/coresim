@@ -4,8 +4,10 @@
 #import <CoreMedia/CoreMedia.h>
 #import <Foundation/Foundation.h>
 
+#include <cstddef>
 #include <functional>
 #include <memory>
+#include <vector>
 
 namespace coresim {
 
@@ -51,5 +53,13 @@ class AudioEncoder {
   class Impl;
   std::unique_ptr<Impl> impl_;
 };
+
+// Prepends a 7-byte ADTS header (no CRC) describing `aacFrameLength` bytes of raw AAC-LC payload
+// at `format`'s sample rate/channel count, appending both to `out`. Makes a streamed packet
+// self-describing (decodable without an out-of-band config exchange) — the audio counterpart to
+// RepackAsAnnexB's per-keyframe SPS/PPS (video_encoder.h). Not used for the muxed-file recording
+// path — AVAssetWriter passthrough wants bare AAC plus AudioEncoder::OutputFormatDescription, not
+// ADTS framing.
+void PrependADTSHeader(std::vector<uint8_t>& out, size_t aacFrameLength, const AudioStreamBasicDescription& format);
 
 }  // namespace coresim

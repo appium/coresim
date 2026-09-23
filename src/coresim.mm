@@ -1260,6 +1260,13 @@ class NativeDevice : public Napi::ObjectWrap<NativeDevice> {
                 [accessUnitTsfn, errorTsfn]() mutable {
                   accessUnitTsfn.Release();
                   errorTsfn.Release();
+                },
+                [accessUnitTsfn, errorTsfn]() mutable {
+                  // See ActiveSessionRegistry::StopAll's use of AbortDelivery — unblocks a
+                  // producer thread stuck pushing into a full queue so Stop() doesn't deadlock
+                  // waiting on it.
+                  accessUnitTsfn.Abort();
+                  errorTsfn.Abort();
                 });
             try {
               session->Start();
@@ -1313,6 +1320,11 @@ class NativeDevice : public Napi::ObjectWrap<NativeDevice> {
               [accessUnitTsfn, errorTsfn]() mutable {
                 accessUnitTsfn.Release();
                 errorTsfn.Release();
+              },
+              [accessUnitTsfn, errorTsfn]() mutable {
+                // See the audio branch's identical comment above.
+                accessUnitTsfn.Abort();
+                errorTsfn.Abort();
               });
           try {
             session->Start();
@@ -1756,9 +1768,16 @@ Napi::Value FrameworkVersionBinding(const Napi::CallbackInfo& info) {
 // silently loses its AVAssetWriter-buffered data — the file is left with no moov atom — the
 // instant a caller force-exits via `process.exit()`, since nothing ever calls finishWriting.
 void CleanupActiveSessions(AddonInstanceData* instanceData) {
-  auto stopNoArgs = [](auto& session) { session->Stop(); };
-  instanceData->activeVideoStreams.StopAll(stopNoArgs);
-  instanceData->activeAVStreams.StopAll(stopNoArgs);
+  // AbortDelivery() first: this runs on the main JS thread with the event loop not being pumped
+  // (a cleanup hook, or the synchronous process.on('exit') path below), so nothing else can drain
+  // accessUnitTsfn's bounded queue — a producer thread already blocked pushing into a full queue
+  // would otherwise deadlock against Stop()'s own wait on that same producer thread.
+  auto stopStream = [](auto& session) {
+    session->AbortDelivery();
+    session->Stop();
+  };
+  instanceData->activeVideoStreams.StopAll(stopStream);
+  instanceData->activeAVStreams.StopAll(stopStream);
   instanceData->activeAVRecordings.StopAll([](auto& session) {
     dispatch_semaphore_t sema = dispatch_semaphore_create(0);
     session->Stop([sema](NSError*) { dispatch_semaphore_signal(sema); });

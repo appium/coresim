@@ -9,8 +9,8 @@ namespace coresim {
 class VideoStreamSession::Impl {
  public:
   Impl(id device, VideoEncoderOptions options, std::function<void(VideoAccessUnit)> onAccessUnit,
-       std::function<void(NSError*)> onError, std::function<void()> onEnd)
-      : options_(options), onAccessUnit_(std::move(onAccessUnit)) {
+       std::function<void(NSError*)> onError, std::function<void()> onEnd, std::function<void()> onAbortDelivery)
+      : options_(options), onAccessUnit_(std::move(onAccessUnit)), onAbortDelivery_(std::move(onAbortDelivery)) {
     encoder_ = std::make_unique<VideoFrameEncoder>(
         device, options, [this](CMSampleBufferRef sampleBuffer) { HandleEncodedSample(sampleBuffer); },
         std::move(onError), std::move(onEnd));
@@ -18,6 +18,11 @@ class VideoStreamSession::Impl {
 
   void Start() { encoder_->Start(); }
   void Stop() { encoder_->Stop(); }
+  void AbortDelivery() {
+    if (onAbortDelivery_) {
+      onAbortDelivery_();
+    }
+  }
   void RequestKeyFrame() { encoder_->RequestKeyFrame(); }
 
  private:
@@ -39,6 +44,7 @@ class VideoStreamSession::Impl {
 
   VideoEncoderOptions options_;
   std::function<void(VideoAccessUnit)> onAccessUnit_;
+  std::function<void()> onAbortDelivery_;
   std::unique_ptr<VideoFrameEncoder> encoder_;
   // VideoToolbox's output callback isn't documented as single-threaded, so this is read-modify-
   // written atomically rather than assuming HandleEncodedSample never runs concurrently.
@@ -47,14 +53,18 @@ class VideoStreamSession::Impl {
 
 VideoStreamSession::VideoStreamSession(id device, VideoEncoderOptions options,
                                        std::function<void(VideoAccessUnit)> onAccessUnit,
-                                       std::function<void(NSError*)> onError, std::function<void()> onEnd)
-    : impl_(std::make_unique<Impl>(device, options, std::move(onAccessUnit), std::move(onError), std::move(onEnd))) {}
+                                       std::function<void(NSError*)> onError, std::function<void()> onEnd,
+                                       std::function<void()> onAbortDelivery)
+    : impl_(std::make_unique<Impl>(device, options, std::move(onAccessUnit), std::move(onError), std::move(onEnd),
+                                   std::move(onAbortDelivery))) {}
 
 VideoStreamSession::~VideoStreamSession() = default;
 
 void VideoStreamSession::Start() { impl_->Start(); }
 
 void VideoStreamSession::Stop() { impl_->Stop(); }
+
+void VideoStreamSession::AbortDelivery() { impl_->AbortDelivery(); }
 
 void VideoStreamSession::RequestKeyFrame() { impl_->RequestKeyFrame(); }
 

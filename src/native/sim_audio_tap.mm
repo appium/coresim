@@ -240,8 +240,12 @@ class AudioTapSession::Impl {
       description.UUID = tapUUID_;
       AudioObjectPropertyAddress descAddress = {kAudioTapPropertyDescription, kAudioObjectPropertyScopeGlobal,
                                                 kAudioObjectPropertyElementMain};
-      OSStatus status = AudioObjectSetPropertyData(tapID_, &descAddress, 0, nullptr, sizeof(description),
-                                                   (__bridge void*)description);
+      // The property value is the CATapDescription* itself — inData must point to a variable
+      // holding that pointer, not be the pointer value cast to an address (which reads the
+      // object's own memory as if it were the property buffer).
+      void* descriptionPtr = (__bridge void*)description;
+      OSStatus status =
+          AudioObjectSetPropertyData(tapID_, &descAddress, 0, nullptr, sizeof(descriptionPtr), &descriptionPtr);
       if (status != noErr) {
         // Keep running with the stale set rather than tearing down the whole capture over one
         // failed refresh — the next poll tick retries.

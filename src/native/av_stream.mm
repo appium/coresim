@@ -12,13 +12,14 @@ namespace coresim {
 class AVStreamSession::Impl {
  public:
   Impl(id device, NSString* udid, VideoEncoderOptions videoOptions, std::function<void(AVAccessUnit)> onAccessUnit,
-       std::function<void(NSError*)> onError, std::function<void()> onEnd)
+       std::function<void(NSError*)> onError, std::function<void()> onEnd, std::function<void()> onAbortDelivery)
       : device_(device),
         udid_(udid),
         videoOptions_(videoOptions),
         onAccessUnit_(std::move(onAccessUnit)),
         onError_(std::move(onError)),
-        onEnd_(std::move(onEnd)) {}
+        onEnd_(std::move(onEnd)),
+        onAbortDelivery_(std::move(onAbortDelivery)) {}
 
   ~Impl() { StopInternal(); }
 
@@ -62,6 +63,12 @@ class AVStreamSession::Impl {
   }
 
   void Stop() { StopInternal(); }
+
+  void AbortDelivery() {
+    if (onAbortDelivery_) {
+      onAbortDelivery_();
+    }
+  }
 
   void RequestKeyFrame() {
     if (videoEncoder_) {
@@ -119,8 +126,13 @@ class AVStreamSession::Impl {
     unit.sequence = audioSequence_++;
     CMTime pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer);
     unit.timestampMicros = pts.timescale != 0 ? (pts.value * 1000000 / pts.timescale) : 0;
-    unit.data.resize(length);
-    if (CMBlockBufferCopyDataBytes(block, 0, length, unit.data.data()) != kCMBlockBufferNoErr) {
+    // ADTS-framed (not bare AAC) so each packet self-describes its sample rate/channel count — a
+    // streaming consumer has no other way to learn those, unlike the muxed-file recording path
+    // (av_recording.h), which hands AVAssetWriter the format directly.
+    PrependADTSHeader(unit.data, length, audioTap_->Format());
+    size_t headerSize = unit.data.size();
+    unit.data.resize(headerSize + length);
+    if (CMBlockBufferCopyDataBytes(block, 0, length, unit.data.data() + headerSize) != kCMBlockBufferNoErr) {
       return;
     }
     if (onAccessUnit_) {
@@ -173,6 +185,7 @@ class AVStreamSession::Impl {
   std::function<void(AVAccessUnit)> onAccessUnit_;
   std::function<void(NSError*)> onError_;
   std::function<void()> onEnd_;
+  std::function<void()> onAbortDelivery_;
 
   double clockOrigin_ = 0;
   std::unique_ptr<VideoFrameEncoder> videoEncoder_;
@@ -187,15 +200,17 @@ class AVStreamSession::Impl {
 
 AVStreamSession::AVStreamSession(id device, NSString* udid, VideoEncoderOptions videoOptions,
                                  std::function<void(AVAccessUnit)> onAccessUnit, std::function<void(NSError*)> onError,
-                                 std::function<void()> onEnd)
+                                 std::function<void()> onEnd, std::function<void()> onAbortDelivery)
     : impl_(std::make_unique<Impl>(device, udid, videoOptions, std::move(onAccessUnit), std::move(onError),
-                                   std::move(onEnd))) {}
+                                   std::move(onEnd), std::move(onAbortDelivery))) {}
 
 AVStreamSession::~AVStreamSession() = default;
 
 void AVStreamSession::Start() { impl_->Start(); }
 
 void AVStreamSession::Stop() { impl_->Stop(); }
+
+void AVStreamSession::AbortDelivery() { impl_->AbortDelivery(); }
 
 void AVStreamSession::RequestKeyFrame() { impl_->RequestKeyFrame(); }
 
