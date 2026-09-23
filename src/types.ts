@@ -191,10 +191,10 @@ export interface VideoStreamOptions {
   codec?: 'h264' | 'hevc';
   /**
    * Max frames/sec to poll the framebuffer at — an unchanged frame is never re-encoded, so this
-   * is an upper bound, not a guarantee. Must be >= 1. Defaults to 15.
+   * is an upper bound, not a guarantee. Must be >= 1. Defaults to 60.
    */
   fps?: number;
-  /** Target average bitrate, in bits/sec. Defaults to 2,000,000 (2 Mbps). */
+  /** Target average bitrate, in bits/sec. Defaults to 4,000,000 (4 Mbps). */
   bitrate?: number;
   /**
    * Also stream the device's audio, interleaved into the same `accessUnits()` sequence. Defaults
@@ -213,7 +213,7 @@ export interface JpegStreamOptions {
   displayId?: string;
   /**
    * Max frames/sec to poll the framebuffer at — an unchanged frame is never re-encoded, so this
-   * is an upper bound, not a guarantee. Must be >= 1. Defaults to 15.
+   * is an upper bound, not a guarantee. Must be >= 1. Defaults to 60.
    */
   fps?: number;
   /**

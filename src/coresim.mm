@@ -1103,8 +1103,8 @@ class NativeDevice : public Napi::ObjectWrap<NativeDevice> {
   static coresim::VideoEncoderOptions ParseVideoEncoderOptions(const Napi::CallbackInfo& info, size_t argIndex) {
     NSString* displayId = nil;
     coresim::VideoStreamCodec codec = coresim::VideoStreamCodec::kH264;
-    double fps = 15.0;
-    int bitrate = 2000000;
+    double fps = 60.0;
+    int bitrate = 4000000;
     if (info.Length() > argIndex && info[argIndex].IsObject()) {
       Napi::Object options = info[argIndex].As<Napi::Object>();
       if (options.Has("displayId") && options.Get("displayId").IsString()) {
@@ -1130,7 +1130,7 @@ class NativeDevice : public Napi::ObjectWrap<NativeDevice> {
   // identical comment above).
   static coresim::JpegStreamOptions ParseJpegStreamOptions(const Napi::CallbackInfo& info, size_t argIndex) {
     NSString* displayId = nil;
-    double fps = 15.0;
+    double fps = 60.0;
     NSNumber* jpegQualityPercent = nil;
     double scale = 1.0;
     if (info.Length() > argIndex && info[argIndex].IsObject()) {

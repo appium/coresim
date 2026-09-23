@@ -11,7 +11,7 @@ namespace coresim {
 
 struct JpegStreamOptions {
   NSString* displayId = nil;
-  double fps = 15.0;
+  double fps = 60.0;
   // 0-100 percent; nil for ImageIO's own default (near-lossless) — same semantics as
   // CaptureScreenshot's jpegQualityPercent (sim_screenshot.h).
   NSNumber* jpegQualityPercent = nil;
