@@ -68,20 +68,14 @@ class JpegStreamSession::Impl {
     // Set before the initial encode below — EmitFrame measures elapsed time from it, and running_
     // gates whether a frame is delivered at all (see Tick()'s own check).
     running_ = true;
-    NSData* data = nil;
+    // Encode immediately rather than waiting for a *changed* seed on the first tick, or the stream
+    // would stay silent until the display changes again — unlike Tick(), this doesn't check
+    // lastSeed_ first (it's still its default 0), so EncodeCurrentSeedAndEmit always runs once here.
     NSError* encodeError = nil;
-    bool encoded = EncodeSurface(surface, &data, &encodeError);
+    EncodeCurrentSeedAndEmit(surface, &encodeError);
     if (encodeError != nil) {
       running_ = false;
       throw NSErrorException(encodeError);
-    }
-    // Encode immediately rather than waiting for a *changed* seed on the first tick, or the stream
-    // would stay silent until the display changes again. Only commit the seed once a frame was
-    // actually produced — a transient failure (nil CIImage/CGImage) otherwise leaves lastSeed_ at
-    // its default 0, so the first Tick() sees the real seed as "changed" and retries automatically.
-    if (encoded) {
-      lastSeed_ = IOSurfaceGetSeed(surface);
-      EmitFrame(data);
     }
 
     double interval = 1.0 / std::max(options_.fps, 1.0);
@@ -172,12 +166,8 @@ class JpegStreamSession::Impl {
           stalledSince_ = 0;
           return;
         }
-        NSData* data = nil;
         NSError* encodeError = nil;
-        // Only commit the new seed once EncodeSurface actually produced a frame — a transient
-        // failure must leave lastSeed_ stale so the next tick retries this same frame instead of
-        // silently going quiet until the display changes again.
-        bool encoded = EncodeSurface(surface, &data, &encodeError);
+        bool encoded = EncodeCurrentSeedAndEmit(surface, &encodeError);
         if (encodeError != nil) {
           if (onError_) {
             onError_(encodeError);
@@ -187,8 +177,6 @@ class JpegStreamSession::Impl {
         }
         if (encoded) {
           stalledSince_ = 0;
-          lastSeed_ = seed;
-          EmitFrame(data);
         } else {
           ReportIfStalledTooLong();  // transient — e.g. a momentary CIImage/CGImage render failure
         }
@@ -223,6 +211,33 @@ class JpegStreamSession::Impl {
       }
       StopFromQueue();
     }
+  }
+
+  // Reads `surface`'s current seed, attempts one encode, and — only on success — commits exactly
+  // that pre-encode seed to lastSeed_ and emits the frame. Reading the seed before encoding (never
+  // a value re-read afterward) matters: if the display changes again while EncodeSurface() is still
+  // running, the pre-encode seed still correctly identifies which content this frame captures, so
+  // the next caller sees the surface's now-newer seed as "changed" and retries — reading it after
+  // encoding instead would wrongly commit the *newer* seed against the *older* frame just emitted,
+  // permanently losing that update (the following unchanged-seed check would then treat it as
+  // already delivered, silently, since it looks identical to a genuinely static display). Shared by
+  // Start() (always called once, regardless of lastSeed_) and Tick() (only once a changed seed was
+  // already observed) so this ordering can't independently drift between the two again.
+  //
+  // Returns whether a frame was produced. Sets *error only for a genuine encode failure that
+  // should end the whole session; a false return with *error left nil means "transient, retry
+  // next tick" (mirrors VideoFrameEncoder::EncodeSurface's identical CVPixelBufferCreateWithIOSurface
+  // transient-failure contract in video_encoder.mm) — lastSeed_ is deliberately left stale then, so
+  // the next attempt retries this same content instead of silently skipping it forever.
+  bool EncodeCurrentSeedAndEmit(IOSurfaceRef surface, NSError** error) {
+    uint32_t seed = IOSurfaceGetSeed(surface);
+    NSData* data = nil;
+    bool encoded = EncodeSurface(surface, &data, error);
+    if (encoded) {
+      lastSeed_ = seed;
+      EmitFrame(data);
+    }
+    return encoded;
   }
 
   // Returns whether a frame was produced. Sets *error only for a genuine encode failure that
