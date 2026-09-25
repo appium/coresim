@@ -1,3 +1,9 @@
+## [1.8.0](https://github.com/appium/coresim/compare/v1.7.0...v1.8.0) (2026-09-25)
+
+### Features
+
+* add real-time JPEG frame streaming (startJpegStream) ([#20](https://github.com/appium/coresim/issues/20)) ([7a73c0a](https://github.com/appium/coresim/commit/7a73c0a46a5ce72afeb435fb9209e75d7a21df79))
+
 ## [1.7.0](https://github.com/appium/coresim/compare/v1.6.0...v1.7.0) (2026-09-23)
 
 ### Features
