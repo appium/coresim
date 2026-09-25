@@ -2,6 +2,7 @@ export {NativeSimError, NativeSimUnavailableError, NativeSimDispatchError, Nativ
 export {NativeSimctl} from './native-simctl.js';
 export {SpawnedProcess} from './commands/spawn.js';
 export {VideoStream} from './commands/video-stream.js';
+export {JpegStream} from './commands/jpeg-stream.js';
 export type {AppContainerType} from './commands/app.js';
 export type {BiometricName} from './commands/biometric.js';
 export {
@@ -10,6 +11,8 @@ export {
   type ApnsAlert,
   type ApnsPayload,
   type ApnsSound,
+  type JpegFrame,
+  type JpegStreamOptions,
   type PushNotificationPayload,
   type ScreenshotOptions,
   type SimBootInfo,

@@ -13,7 +13,7 @@ namespace coresim {
 
 namespace {
 
-NSString* const kAVRecordingErrorDomain = @"com.appium.coresim.AVRecording";
+NSString* const kAVRecordingErrorDomain = @"io.appium.coresim.AVRecording";
 
 NSError* MakeError(NSInteger code, NSString* message) {
   return [NSError errorWithDomain:kAVRecordingErrorDomain code:code userInfo:@{NSLocalizedDescriptionKey : message}];

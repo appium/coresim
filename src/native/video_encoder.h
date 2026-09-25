@@ -15,8 +15,8 @@ enum class VideoStreamCodec { kH264, kHEVC };
 struct VideoEncoderOptions {
   VideoStreamCodec codec = VideoStreamCodec::kH264;
   NSString* displayId = nil;
-  double fps = 15.0;
-  int bitrate = 2000000;
+  double fps = 60.0;
+  int bitrate = 4000000;
 };
 
 // Polls the live display IOSurface (sim_screenshot.h) on a serial queue and encodes changed

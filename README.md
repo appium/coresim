@@ -54,9 +54,11 @@ await sim.deleteDevice(device.udid);
   readiness with `getBootStatus()`/`waitForBoot()`.
 - **Apps** — install, remove, launch, terminate, and inspect apps.
 - **Processes** — spawn a process on the simulator and stream its stdout/stderr live.
-- **Screen capture** — screenshots, video recording to a file, and a real-time encoded video
-  stream — optionally with the device's own audio, muxed into the recording or interleaved into
-  the stream (`audio: true` on `startVideoRecording`/`startVideoStream`). Audio capture requires:
+- **Screen capture** — screenshots, video recording to a file, a real-time encoded video stream,
+  and a real-time JPEG frame stream (`startJpegStream` — configurable fps/quality, no video codec
+  involved, meant for callers building their own MJPEG stream out of the frame sequence) —
+  optionally with the device's own audio, muxed into the recording or interleaved into the video
+  stream (`audio: true` on `startVideoRecording`/`startVideoStream`). Audio capture requires:
   - **macOS 14.2+** on the host (Core Audio process taps).
   - The host's **"System Audio Recording Only"** privacy permission (System Settings > Privacy &
     Security > Screen & System Audio Recording). This can't be granted programmatically, and a

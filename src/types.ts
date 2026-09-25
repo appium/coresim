@@ -191,10 +191,10 @@ export interface VideoStreamOptions {
   codec?: 'h264' | 'hevc';
   /**
    * Max frames/sec to poll the framebuffer at — an unchanged frame is never re-encoded, so this
-   * is an upper bound, not a guarantee. Must be >= 1. Defaults to 15.
+   * is an upper bound, not a guarantee. Must be >= 1. Defaults to 60.
    */
   fps?: number;
-  /** Target average bitrate, in bits/sec. Defaults to 2,000,000 (2 Mbps). */
+  /** Target average bitrate, in bits/sec. Defaults to 4,000,000 (4 Mbps). */
   bitrate?: number;
   /**
    * Also stream the device's audio, interleaved into the same `accessUnits()` sequence. Defaults
@@ -202,6 +202,44 @@ export interface VideoStreamOptions {
    * its doc comment and the README's "Screen capture" section.
    */
   audio?: boolean;
+}
+
+/** Options for `NativeSimctl.startJpegStream`. */
+export interface JpegStreamOptions {
+  /**
+   * Which display to stream, by `id` from `getDisplays()`. Defaults to the primary display
+   * (falling back to the first renderable display if none is primary, e.g. tvOS).
+   */
+  displayId?: string;
+  /**
+   * Max frames/sec to poll the framebuffer at — an unchanged frame is never re-encoded, so this
+   * is an upper bound, not a guarantee. Must be >= 1. Defaults to 60.
+   */
+  fps?: number;
+  /**
+   * JPEG quality as a percentage (0 = smallest/most compressed, 100 = largest/least compressed).
+   * Defaults to 80 — noticeably smaller than {@link ScreenshotOptions.quality}'s own (near-
+   * lossless) default, more suitable for a continuous live stream than a one-off screenshot.
+   */
+  quality?: number;
+  /**
+   * Frame scale as a percentage of the original display resolution — 100 (default) performs no
+   * scaling; must be greater than 0 and no greater than 100.
+   */
+  scale?: number;
+}
+
+/**
+ * One JPEG-encoded frame from `JpegStream.frames()`. Unlike {@link VideoAccessUnit}, every frame
+ * is independently decodable — there's no keyframe/interframe distinction — so consumers (e.g. an
+ * MJPEG multipart HTTP stream built from this sequence) can start from, or drop, any frame freely.
+ */
+export interface JpegFrame {
+  data: Buffer;
+  /** Monotonically increasing, starting at 0. */
+  sequence: number;
+  /** Microseconds since the stream started. */
+  timestampMicros: number;
 }
 
 /**
@@ -349,6 +387,20 @@ export interface NativeVideoStreamHandle {
   requestKeyFrame(): void;
 }
 
+/** Raw shape of a JPEG frame as the native addon delivers it — see {@link JpegFrame}. */
+export interface NativeJpegFrame {
+  data: Buffer;
+  sequence: number;
+  timestampMicros: number;
+}
+
+export type NativeJpegFrameCallback = (frame: NativeJpegFrame) => void;
+
+/** A live `coresim::JpegStreamSession`, wrapped by `coresim.mm`'s `NativeJpegStream`. */
+export interface NativeJpegStreamHandle {
+  stop(): Promise<void>;
+}
+
 /**
  * A live recording, wrapped by `coresim.mm`'s `NativePrivateRecordingHandle` (video only,
  * addressing CoreSimulator's own internally-tracked private recorder) or `NativeAVRecording`
@@ -431,6 +483,11 @@ export interface NativeDeviceHandle {
     onAccessUnit: NativeVideoAccessUnitCallback,
     onError: NativeVideoErrorCallback,
   ): Promise<NativeVideoStreamHandle>;
+  startJpegStream(
+    options: {displayId?: string; fps?: number; quality?: number; scale?: number} | undefined,
+    onFrame: NativeJpegFrameCallback,
+    onError: NativeVideoErrorCallback,
+  ): Promise<NativeJpegStreamHandle>;
   spawn(path: string, options: SpawnOptions | undefined, onExit: NativeSpawnExitCallback): Promise<NativeSpawnResult>;
 }
 

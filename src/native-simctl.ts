@@ -20,6 +20,7 @@ import {
   setDarwinNotificationState,
 } from './commands/darwin-notification.js';
 import {clearLocation, getEnv, openUrl, pushNotification, setLocation} from './commands/interaction.js';
+import {startJpegStream} from './commands/jpeg-stream.js';
 import {addCertificate, addRootCertificate, resetKeychain} from './commands/keychain.js';
 import {
   bootDevice,
@@ -60,6 +61,7 @@ import './commands/app.js';
 import './commands/biometric.js';
 import './commands/darwin-notification.js';
 import './commands/interaction.js';
+import './commands/jpeg-stream.js';
 import './commands/keychain.js';
 import './commands/lifecycle.js';
 import './commands/media.js';
@@ -256,6 +258,7 @@ Object.assign(NativeSimctl.prototype, {
   stopVideoRecording,
   isVideoRecording,
   startVideoStream,
+  startJpegStream,
 
   // webinspector
   getWebInspectorSocket,

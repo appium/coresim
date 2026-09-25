@@ -12,7 +12,7 @@ namespace coresim {
 
 namespace {
 
-NSString* const kScreenshotErrorDomain = @"com.appium.coresim.Screenshot";
+NSString* const kScreenshotErrorDomain = @"io.appium.coresim.Screenshot";
 
 NSError* MakeError(NSInteger code, NSString* message) {
   return [NSError errorWithDomain:kScreenshotErrorDomain code:code userInfo:@{NSLocalizedDescriptionKey : message}];
@@ -171,6 +171,32 @@ NSArray<NSDictionary*>* ListDisplays(id device, NSError** error) {
   return result;
 }
 
+NSData* EncodeImage(CGImageRef cgImage, ScreenshotFormat format, NSNumber* jpegQualityPercent, NSError** error) {
+  NSString* uti = format == ScreenshotFormat::kJPEG ? kJPEGUTI : kPNGUTI;
+  NSMutableData* imageData = [NSMutableData data];
+  CGImageDestinationRef destination =
+      CGImageDestinationCreateWithData((__bridge CFMutableDataRef)imageData, (__bridge CFStringRef)uti, 1, NULL);
+  if (destination == nullptr) {
+    *error = MakeError(7, @"Failed to create an image encoder");
+    return nil;
+  }
+  // kCGImageDestinationLossyCompressionQuality is meaningless for PNG (always lossless) — ImageIO
+  // silently ignores properties a format doesn't use, so this is only gated on jpegQualityPercent
+  // being present, not on `format` too.
+  NSDictionary* properties =
+      jpegQualityPercent != nil
+          ? @{(NSString*)kCGImageDestinationLossyCompressionQuality : @(jpegQualityPercent.doubleValue / 100.0)}
+          : nil;
+  CGImageDestinationAddImage(destination, cgImage, (__bridge CFDictionaryRef)properties);
+  BOOL ok = CGImageDestinationFinalize(destination);
+  CFRelease(destination);
+  if (!ok) {
+    *error = MakeError(8, @"Failed to encode the image");
+    return nil;
+  }
+  return imageData;
+}
+
 NSData* CaptureScreenshot(id device, NSString* displayId, ScreenshotFormat format, NSNumber* jpegQualityPercent,
                           NSError** error) {
   id descriptor = ResolveCaptureDisplay(device, displayId, error);
@@ -193,7 +219,7 @@ NSData* CaptureScreenshot(id device, NSString* displayId, ScreenshotFormat forma
 
   // A fresh CIContext per call, matching this operation's one-shot semantics (mirrors
   // simctl's own screenshot command) rather than the persistent, reused context a
-  // continuous video/streaming path would want.
+  // continuous video/streaming path would want (JpegStreamSession — see sim_jpeg_stream.mm).
   CIContext* context = [CIContext contextWithOptions:nil];
   CGImageRef cgImage = [context createCGImage:ciImage fromRect:ciImage.extent];
   if (cgImage == nil) {
@@ -201,30 +227,8 @@ NSData* CaptureScreenshot(id device, NSString* displayId, ScreenshotFormat forma
     return nil;
   }
 
-  NSString* uti = format == ScreenshotFormat::kJPEG ? kJPEGUTI : kPNGUTI;
-  NSMutableData* imageData = [NSMutableData data];
-  CGImageDestinationRef destination =
-      CGImageDestinationCreateWithData((__bridge CFMutableDataRef)imageData, (__bridge CFStringRef)uti, 1, NULL);
-  if (destination == nullptr) {
-    CGImageRelease(cgImage);
-    *error = MakeError(7, @"Failed to create an image encoder for the captured screenshot");
-    return nil;
-  }
-  // kCGImageDestinationLossyCompressionQuality is meaningless for PNG (always lossless) — ImageIO
-  // silently ignores properties a format doesn't use, so this is only gated on jpegQualityPercent
-  // being present, not on `format` too.
-  NSDictionary* properties =
-      jpegQualityPercent != nil
-          ? @{(NSString*)kCGImageDestinationLossyCompressionQuality : @(jpegQualityPercent.doubleValue / 100.0)}
-          : nil;
-  CGImageDestinationAddImage(destination, cgImage, (__bridge CFDictionaryRef)properties);
-  BOOL ok = CGImageDestinationFinalize(destination);
-  CFRelease(destination);
+  NSData* imageData = EncodeImage(cgImage, format, jpegQualityPercent, error);
   CGImageRelease(cgImage);
-  if (!ok) {
-    *error = MakeError(8, @"Failed to encode the captured screenshot");
-    return nil;
-  }
   return imageData;
 }
 

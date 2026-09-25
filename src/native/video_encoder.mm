@@ -16,7 +16,7 @@ namespace coresim {
 
 namespace {
 
-NSString* const kVideoEncoderErrorDomain = @"com.appium.coresim.VideoEncoder";
+NSString* const kVideoEncoderErrorDomain = @"io.appium.coresim.VideoEncoder";
 
 NSError* MakeError(NSInteger code, NSString* message) {
   return [NSError errorWithDomain:kVideoEncoderErrorDomain code:code userInfo:@{NSLocalizedDescriptionKey : message}];
@@ -117,7 +117,7 @@ class VideoFrameEncoder::Impl {
         onError_(std::move(onError)),
         onEnd_(std::move(onEnd)),
         sharedClockOrigin_(sharedClockOrigin) {
-    queue_ = dispatch_queue_create("com.appium.coresim.videoEncoder", DISPATCH_QUEUE_SERIAL);
+    queue_ = dispatch_queue_create("io.appium.coresim.videoEncoder", DISPATCH_QUEUE_SERIAL);
   }
 
   ~Impl() { Stop(); }

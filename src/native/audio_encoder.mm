@@ -12,7 +12,7 @@ namespace coresim {
 
 namespace {
 
-NSString* const kAudioEncoderErrorDomain = @"com.appium.coresim.AudioEncoder";
+NSString* const kAudioEncoderErrorDomain = @"io.appium.coresim.AudioEncoder";
 
 NSError* MakeError(NSInteger code, NSString* message) {
   return [NSError errorWithDomain:kAudioEncoderErrorDomain code:code userInfo:@{NSLocalizedDescriptionKey : message}];
