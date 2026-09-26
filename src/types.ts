@@ -7,6 +7,14 @@ export enum SimDeviceState {
   ShuttingDown = 4,
 }
 
+/** Device orientations `setOrientation` accepts — the raw GSEvent wire values (see CLAUDE.md). */
+export enum DeviceOrientation {
+  Portrait = 1,
+  PortraitUpsideDown = 2,
+  LandscapeRight = 3,
+  LandscapeLeft = 4,
+}
+
 /** A device in the default device set, as returned by `NativeSimctl.getDevices()`/`createDevice()`. */
 export interface SimDeviceInfo {
   /** e.g. `"D768CB90-CBB4-4557-82F6-B89E1CD0E80B"`. */
@@ -436,6 +444,8 @@ export interface NativeDeviceHandle {
   openUrl(url: string): Promise<void>;
   setLocation(latitude: number, longitude: number): Promise<void>;
   clearLocation(): Promise<void>;
+  setOrientation(orientation: number): Promise<void>;
+  getOrientation(): Promise<number>;
   sendPushNotification(bundleId: string, payload: PushNotificationPayload): Promise<void>;
   addCertificate(path: string, trustAsRoot: boolean): Promise<void>;
   resetKeychain(): Promise<void>;

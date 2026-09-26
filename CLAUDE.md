@@ -224,9 +224,50 @@ toolchain (`make` and `xcodebuild`).
   (`spawnProcess`'s own PATH-like resolution, above, finds it under the runtime root), the same
   way `simctl spawn` would resolve it against the guest's `$PATH`. The runtime root itself is also
   exposed publicly as `getRuntimeRootPath`, for callers that need the raw path directly.
+- **`setOrientation` rotates the device via a raw GSEvent mach message to SpringBoard's
+  `PurpleWorkspacePort`** (`SetDeviceOrientation` in `sim_device.mm`) — the same mechanism
+  Simulator.app's Hardware > Rotate menu uses, recovered from Xcode's private `SimulatorApp/
+  GSEvent.h` (`CoreSimulator.framework` itself has no orientation API). A
+  `GSEventTypeDeviceOrientationChanged` message (`50 | 0x20000`) is hand-built into a 112-byte
+  buffer (mach header + record: type at `0x18`, size at `0x48`, orientation at `0x4C`) and sent via
+  `mach_msg` to the port `LookupMachPort` resolves for `"PurpleWorkspacePort"`. Confirmed working
+  end-to-end (screenshot dimensions swap on rotation) on Xcode 27/iOS 27. A newer `dtuhidd`/
+  CoreDevice XPC mechanism exists too (gated on the runtime reporting device-motion capability) but
+  had no visible effect here despite the daemon answering a liveness probe — Purple is what
+  actually works, with far less machinery.
+- **A `SimDevice` object created (pre-boot) by this process can silently stop delivering
+  `LookupMachPort` mach messages once the device boots — for the rest of that process's life —
+  even though the lookup keeps returning a valid, sendable port.** Confirmed via a minimal repro:
+  create + boot + send → no effect; a fresh process touching the same UDID after boot works every
+  time. Re-fetching via `-[SimDeviceSet devices]` doesn't help — CoreSimulator memoizes `SimDevice`
+  by UDID, so it's the same object. Not root-caused (closed-source). Affects `setOrientation` and
+  plausibly `getPasteboard`/`setPasteboard` (the only other `LookupMachPort` consumer).
+- **`getOrientation` reads live via a guest-spawned `defaults read` of `com.apple.backboardd`'s
+  `BKDigitizerPersistentServiceProperties`** (`sim_orientation.mm`) — a real, empirically-confirmed
+  signal, unlike the two `dtuhidd` XPC read paths, both dead on Xcode 27/iOS 27 (a CoreMotion-based
+  fallback checked too, also unavailable here). Costs a guest process spawn (~150ms via our own
+  `Spawn`, not `simctl`). One stale entry accumulates per boot on a reused device; the *last* entry
+  is always the live one (confirmed across repeated reboots). Its `GraphicsOrientation` swaps
+  landscape left/right vs. our own `DeviceOrientation` values (confirmed empirically) — see
+  `TranslateGraphicsOrientation`. Defaults to portrait if never rotated this boot, or on error.
+- **`startVideoStream`/`startVideoRecording({fps})` correct a rotated frame's orientation** — the
+  captured surface itself never reflects a live rotation (see above). `video_encoder.mm` polls
+  `getOrientation` every 5s (too slow to check per frame) and rotates via CoreImage before
+  encoding, rebuilding the `VTCompressionSession` at the rotated dimensions.
+  `RotationDegreesForOrientation`'s angles were verified empirically, not derived from enum names.
+  A block capturing a lambda's locals must not be written inline inside `SafeInvoke([&] {...})` if
+  it outlives the function — crashed once with a delayed `SIGSEGV`; declare it as a normal local
+  first instead.
+- **A writer-level append failure in `av_recording.mm` now also stops `videoEncoder_`, not just the
+  audio side** — dispatched async (see its own comment for why) rather than inline.
 
 ## Known gaps
 
 - No handling of a CoreSimulator/Xcode version mismatch requiring an upgrade (the way `simctl`'s own
   wrapper does).
 - `spawnProcess` has no writable `stdin`.
+- `getOrientation` can lag a real rotation by up to 5s in a running video stream/recording (the
+  background poll interval — see detailed bullet above), and reads portrait for a device that's
+  never rotated this boot, indistinguishable from one that genuinely has.
+- A device created and booted in-process can silently drop `LookupMachPort` messages
+  (`setOrientation`, pasteboard) for that process's lifetime (see detailed bullet above).

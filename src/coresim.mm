@@ -32,6 +32,7 @@
 #include "native/sim_device.h"
 #include "native/sim_device_set.h"
 #include "native/sim_jpeg_stream.h"
+#include "native/sim_orientation.h"
 #include "native/sim_pasteboard.h"
 #include "native/sim_process.h"
 #include "native/sim_screenshot.h"
@@ -798,6 +799,15 @@ class NativeDevice : public Napi::ObjectWrap<NativeDevice> {
     });
   }
 
+  Napi::Value SetOrientation(const Napi::CallbackInfo& info) {
+    id device = device_;
+    int32_t orientation = info[0].As<Napi::Number>().Int32Value();
+    return RunAsyncVoid(info.Env(), [device, orientation]() {
+      NSError* error = nil;
+      ThrowIfFailed(coresim::SetDeviceOrientation(device, orientation, &error), error);
+    });
+  }
+
   Napi::Value SendPushNotification(const Napi::CallbackInfo& info) {
     id device = device_;
     NSString* bundleId = @(info[0].As<Napi::String>().Utf8Value().c_str());
@@ -1096,6 +1106,23 @@ class NativeDevice : public Napi::ObjectWrap<NativeDevice> {
           return result;
         },
         [](Napi::Env env, NSArray* result) -> Napi::Value { return NSObjectToJsValue(env, result); });
+  }
+
+  Napi::Value GetOrientation(const Napi::CallbackInfo& info) {
+    id device = device_;
+    return RunAsync<int32_t>(
+        info.Env(),
+        [device]() -> int32_t {
+          dispatch_semaphore_t sema = dispatch_semaphore_create(0);
+          __block int32_t result = 1;
+          coresim::ReadGuestOrientation(device, ^(int32_t orientation) {
+            result = orientation;
+            dispatch_semaphore_signal(sema);
+          });
+          dispatch_semaphore_wait(sema, DISPATCH_TIME_FOREVER);
+          return result;
+        },
+        [](Napi::Env env, int32_t result) -> Napi::Value { return Napi::Number::New(env, result); });
   }
 
   // Shared by StartVideoRecording (audio path)/StartVideoStream — `argIndex` is where the options
@@ -1702,6 +1729,7 @@ void NativeDevice::Init(Napi::Env env) {
                       InstanceMethod<&NativeDevice::OpenUrl>("openUrl"),
                       InstanceMethod<&NativeDevice::SetLocation>("setLocation"),
                       InstanceMethod<&NativeDevice::ClearLocation>("clearLocation"),
+                      InstanceMethod<&NativeDevice::SetOrientation>("setOrientation"),
                       InstanceMethod<&NativeDevice::SendPushNotification>("sendPushNotification"),
                       InstanceMethod<&NativeDevice::AddCertificate>("addCertificate"),
                       InstanceMethod<&NativeDevice::ResetKeychain>("resetKeychain"),
@@ -1726,6 +1754,7 @@ void NativeDevice::Init(Napi::Env env) {
                       InstanceMethod<&NativeDevice::GetWebInspectorSocket>("getWebInspectorSocket"),
                       InstanceMethod<&NativeDevice::Screenshot>("screenshot"),
                       InstanceMethod<&NativeDevice::GetDisplays>("getDisplays"),
+                      InstanceMethod<&NativeDevice::GetOrientation>("getOrientation"),
                       InstanceMethod<&NativeDevice::StartVideoRecording>("startVideoRecording"),
                       InstanceMethod<&NativeDevice::StartVideoStream>("startVideoStream"),
                       InstanceMethod<&NativeDevice::StartJpegStream>("startJpegStream"),

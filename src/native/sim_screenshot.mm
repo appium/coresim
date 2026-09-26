@@ -152,6 +152,27 @@ id ResolveCaptureDisplay(id device, NSString* displayId, NSError** error) {
   return ResolveDisplayDescriptor(candidates, displayId, error);
 }
 
+// The real protocol is SimScreenCaptureService (see CLAUDE.md) — found by scanning ioPorts for
+// whichever descriptor responds to startRecordingFromScreen:..., since no header exists for it.
+id ResolveScreenCaptureService(id device, NSError** error) {
+  static const std::string kStartRecordingSelector =
+      "startRecordingFromScreen:maskPolicy:assetWriterOutputSettings:outputFile:completionQueue:completionHandler:";
+  id ioClient = IdGetter(device, "io");
+  if (ioClient == nil) {
+    *error = MakeError(11, @"Device has no IO client available — is it booted?");
+    return nil;
+  }
+  NSArray* ports = IdGetter(ioClient, "ioPorts");
+  SEL selector = NSSelectorFromString(@(kStartRecordingSelector.c_str()));
+  for (id port in ports) {
+    id descriptor = IdGetter(port, "descriptor");
+    if (descriptor != nil && [descriptor respondsToSelector:selector]) {
+      return descriptor;
+    }
+  }
+  throw NativeSimUnavailableError("selector", kStartRecordingSelector, CoreSimulatorFrameworkVersion());
+}
+
 id CurrentDisplaySurface(id descriptor) { return RenderableSurface(descriptor); }
 
 NSArray<NSDictionary*>* ListDisplays(id device, NSError** error) {

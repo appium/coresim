@@ -1,15 +1,19 @@
 #include "video_encoder.h"
 
+#import <CoreImage/CoreImage.h>
 #import <CoreVideo/CoreVideo.h>
 #import <IOSurface/IOSurface.h>
 #import <VideoToolbox/VideoToolbox.h>
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
+#include <memory>
 
 #include "monotonic_clock.h"
 #include "nserror_bridge.h"
 #include "safe_dispatch.h"
+#include "sim_orientation.h"
 #include "sim_screenshot.h"
 
 namespace coresim {
@@ -81,6 +85,51 @@ void AppendParameterSets(std::vector<uint8_t>& out, CMFormatDescriptionRef forma
   }
 }
 
+// Clockwise degrees to visually rotate a captured frame to correct for `orientation` — verified
+// empirically against a live device, not assumed from the enum names (see CLAUDE.md).
+int RotationDegreesForOrientation(int32_t orientation) {
+  switch (orientation) {
+    case 2:
+      return 180;
+    case 3:
+      return 270;
+    case 4:
+      return 90;
+    default:
+      return 0;
+  }
+}
+
+// A rotated copy of `surface`'s frame, sized for `degrees` (swapped width/height at 90/270), via
+// CoreImage — the raw surface itself never reflects a live rotation (see CLAUDE.md). Caller owns
+// the result (CVPixelBufferRelease). Returns nullptr on any (transient) failure.
+CVPixelBufferRef RotatedPixelBuffer(IOSurfaceRef surface, int degrees, CIContext* context) {
+  CIImage* image = [CIImage imageWithIOSurface:surface];
+  if (image == nil) {
+    return nullptr;
+  }
+  // CoreImage is Y-up, unlike a raster's Y-down row order, so a visual CW rotation needs a
+  // negative angle here (verified against ground truth, not just derived — see CLAUDE.md). The
+  // translation afterward re-zeroes the extent's origin so CIContext renders it at (0, 0).
+  CGAffineTransform rotate = CGAffineTransformMakeRotation(-degrees * M_PI / 180.0);
+  CIImage* rotated = [image imageByApplyingTransform:rotate];
+  CIImage* normalized = [rotated
+      imageByApplyingTransform:CGAffineTransformMakeTranslation(-rotated.extent.origin.x, -rotated.extent.origin.y)];
+  size_t width = static_cast<size_t>(std::lround(normalized.extent.size.width));
+  size_t height = static_cast<size_t>(std::lround(normalized.extent.size.height));
+  if (width == 0 || height == 0) {
+    return nullptr;
+  }
+  CVPixelBufferRef pixelBuffer = nullptr;
+  CVReturn status =
+      CVPixelBufferCreate(kCFAllocatorDefault, width, height, kCVPixelFormatType_32BGRA, nullptr, &pixelBuffer);
+  if (status != kCVReturnSuccess || pixelBuffer == nullptr) {
+    return nullptr;
+  }
+  [context render:normalized toCVPixelBuffer:pixelBuffer bounds:normalized.extent colorSpace:nil];
+  return pixelBuffer;
+}
+
 }  // namespace
 
 bool IsKeyFrame(CMSampleBufferRef sampleBuffer) {
@@ -118,6 +167,9 @@ class VideoFrameEncoder::Impl {
         onEnd_(std::move(onEnd)),
         sharedClockOrigin_(sharedClockOrigin) {
     queue_ = dispatch_queue_create("io.appium.coresim.videoEncoder", DISPATCH_QUEUE_SERIAL);
+    // Persistent, like JpegStreamSession's own (see sim_jpeg_stream.mm) — a continuous stream, not
+    // CaptureScreenshot's deliberately one-shot context.
+    ciContext_ = [CIContext contextWithOptions:nil];
   }
 
   ~Impl() { Stop(); }
@@ -133,10 +185,14 @@ class VideoFrameEncoder::Impl {
       throw NSErrorException(MakeError(4, @"The device's display surface is not available yet"));
     }
     IOSurfaceRef surface = (__bridge IOSurfaceRef)surfaceObj;
+    // One-time blocking read so the first frame is already correctly oriented, before the
+    // periodic poll below even starts.
+    int32_t orientation = BlockingReadOrientation();
+    polledOrientation_->store(orientation, std::memory_order_relaxed);
     // Set up synchronously (not lazily on the first Tick()) so a setup failure rejects Start()
     // directly rather than only reaching onError, which the caller may not be listening for yet.
     NSError* setupError = nil;
-    if (!SetUpSession(surface, &setupError)) {
+    if (!SetUpSession(surface, orientation, &setupError)) {
       throw NSErrorException(setupError);
     }
     // Must be set before EncodeSurface below — both it and HandleEncodedSample measure elapsed
@@ -156,7 +212,7 @@ class VideoFrameEncoder::Impl {
     running_ = true;
     bool encoded = false;
     try {
-      encoded = EncodeSurface(surface);
+      encoded = EncodeSurface(surface, orientation);
     } catch (...) {
       running_ = false;
       VTCompressionSessionInvalidate(session_);
@@ -165,11 +221,13 @@ class VideoFrameEncoder::Impl {
       throw;
     }
     // Only commit the seed once a frame was actually submitted — a transient pixel-buffer
-    // creation failure (EncodeSurface returning false) otherwise leaves lastSeed_ at its default
-    // 0, so the first Tick() sees the real seed as "changed" and retries automatically instead of
-    // the stream going silent forever on a display that never changes again.
+    // creation failure (EncodeSurface returning false) otherwise leaves lastSeed_/
+    // hasEncodedSinceSetup_ at their defaults, so the first Tick() sees this as still needing a
+    // frame and retries automatically instead of the stream going silent forever on a display
+    // that never changes again.
     if (encoded) {
       lastSeed_ = IOSurfaceGetSeed(surface);
+      hasEncodedSinceSetup_ = true;
     }
 
     double interval = 1.0 / std::max(options_.fps, 1.0);
@@ -184,6 +242,7 @@ class VideoFrameEncoder::Impl {
     });
     timer_ = timer;
     dispatch_resume(timer_);
+    StartOrientationPoll();
   }
 
   // Callable from any thread except `queue_` itself (would deadlock on the dispatch_sync below).
@@ -191,6 +250,7 @@ class VideoFrameEncoder::Impl {
     if (!running_.exchange(false)) {
       return;  // idempotent
     }
+    StopOrientationPoll();
     if (timer_ != nullptr) {
       dispatch_source_cancel(timer_);
       // Blocks until any in-flight Tick() finishes — by then running_ is already false, so it
@@ -205,12 +265,53 @@ class VideoFrameEncoder::Impl {
   void RequestKeyFrame() { forceKeyFrame_ = true; }
 
  private:
+  int32_t BlockingReadOrientation() {
+    dispatch_semaphore_t sema = dispatch_semaphore_create(0);
+    __block int32_t result = 1;
+    ReadGuestOrientation(device_, ^(int32_t orientation) {
+      result = orientation;
+      dispatch_semaphore_signal(sema);
+    });
+    dispatch_semaphore_wait(sema, DISPATCH_TIME_FOREVER);
+    return result;
+  }
+
+  // Keeps polledOrientation_ fresh against a rotation from any source (see CLAUDE.md). Slow
+  // (~150ms/read) by design — rotations are infrequent, and Tick() must stay cheap.
+  void StartOrientationPoll() {
+    std::shared_ptr<std::atomic<int32_t>> cell = polledOrientation_;
+    id device = device_;
+    dispatch_queue_t pollQueue =
+        dispatch_queue_create("io.appium.coresim.videoEncoder.orientationPoll", DISPATCH_QUEUE_SERIAL);
+    dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, pollQueue);
+    constexpr int64_t kPollIntervalSeconds = 5;
+    // Starts one interval out — Start() already seeded polledOrientation_ synchronously.
+    dispatch_source_set_timer(timer, dispatch_time(DISPATCH_TIME_NOW, kPollIntervalSeconds * NSEC_PER_SEC),
+                              kPollIntervalSeconds * NSEC_PER_SEC, NSEC_PER_SEC);
+    // `cell`, not `this` — see polledOrientation_'s own comment.
+    dispatch_source_set_event_handler(timer, ^{
+      ReadGuestOrientation(device, ^(int32_t orientation) {
+        cell->store(orientation, std::memory_order_relaxed);
+      });
+    });
+    orientationPollTimer_ = timer;
+    dispatch_resume(orientationPollTimer_);
+  }
+
+  void StopOrientationPoll() {
+    if (orientationPollTimer_ != nullptr) {
+      dispatch_source_cancel(orientationPollTimer_);
+      orientationPollTimer_ = nullptr;
+    }
+  }
+
   // Same as Stop() minus the dispatch_sync barrier — only safe from within Tick() itself, already
   // serialized on `queue_`; would race a concurrent Tick() from any other thread.
   void StopFromQueue() {
     if (!running_.exchange(false)) {
       return;  // idempotent — e.g. an external Stop() already won this race
     }
+    StopOrientationPoll();
     if (timer_ != nullptr) {
       dispatch_source_cancel(timer_);
       timer_ = nullptr;
@@ -266,16 +367,32 @@ class VideoFrameEncoder::Impl {
           return;  // transient — the connection may not have a frame ready yet, try again next tick
         }
         IOSurfaceRef surface = (__bridge IOSurfaceRef)surfaceObj;
-        uint32_t seed = IOSurfaceGetSeed(surface);
-        if (seed == lastSeed_) {
-          return;  // unchanged since the last tick — mirrors CoreSimulator's own recorder, which
-                   // only encodes a frame when the display actually changes (see CLAUDE.md)
+        int32_t orientation = polledOrientation_->load(std::memory_order_relaxed);
+        int32_t rawWidth = static_cast<int32_t>(IOSurfaceGetWidth(surface));
+        int32_t rawHeight = static_cast<int32_t>(IOSurfaceGetHeight(surface));
+        if (rawWidth != rawSurfaceWidth_ || rawHeight != rawSurfaceHeight_ || orientation != sessionOrientation_) {
+          // Raw resize (some CoreSimulator versions) or an orientation change — either needs the
+          // session rebuilt for the new effective dimensions.
+          NSError* resizeError = nil;
+          if (!RecreateSessionForResize(surface, orientation, &resizeError)) {
+            if (onError_) {
+              onError_(resizeError);
+            }
+            StopFromQueue();
+            return;
+          }
         }
-        // Only commit the new seed once EncodeSurface actually submits it — a transient failure
-        // (pixel-buffer creation) must leave lastSeed_ stale so the next tick retries this same
-        // frame instead of silently going quiet until the display changes again.
-        if (EncodeSurface(surface)) {
+        uint32_t seed = IOSurfaceGetSeed(surface);
+        // A differently-shaped replacement surface can collide with the old seed value (confirmed
+        // empirically), so a just-rebuilt session must submit one frame before this skip applies.
+        if (seed == lastSeed_ && hasEncodedSinceSetup_) {
+          return;  // unchanged since the last tick (see CLAUDE.md)
+        }
+        // Leave lastSeed_/hasEncodedSinceSetup_ stale on a transient EncodeSurface failure so the
+        // next tick retries.
+        if (EncodeSurface(surface, orientation)) {
           lastSeed_ = seed;
+          hasEncodedSinceSetup_ = true;
         }
       } catch (const std::exception& e) {
         // Without this, an exception here (e.g. a dropped display-proxy connection) would escape
@@ -288,9 +405,34 @@ class VideoFrameEncoder::Impl {
     }
   }
 
-  bool SetUpSession(IOSurfaceRef surface, NSError** error) {
-    int32_t width = static_cast<int32_t>(IOSurfaceGetWidth(surface));
-    int32_t height = static_cast<int32_t>(IOSurfaceGetHeight(surface));
+  // Tears down `session_` (if any) and recreates it for `surface`'s current dimensions, rotated
+  // for `orientation`. No explicit RequestKeyFrame() needed — a fresh session's first frame is a
+  // keyframe regardless.
+  bool RecreateSessionForResize(IOSurfaceRef surface, int32_t orientation, NSError** error) {
+    if (session_ != nullptr) {
+      VTCompressionSessionCompleteFrames(session_, kCMTimeInvalid);
+      VTCompressionSessionInvalidate(session_);
+      CFRelease(session_);
+      session_ = nullptr;
+    }
+    return SetUpSession(surface, orientation, error);
+  }
+
+  bool SetUpSession(IOSurfaceRef surface, int32_t orientation, NSError** error) {
+    int32_t rawWidth = static_cast<int32_t>(IOSurfaceGetWidth(surface));
+    int32_t rawHeight = static_cast<int32_t>(IOSurfaceGetHeight(surface));
+    rawSurfaceWidth_ = rawWidth;
+    rawSurfaceHeight_ = rawHeight;
+    sessionOrientation_ = orientation;
+    // A fresh/rebuilt session hasn't sent VideoToolbox a frame yet — Tick()'s own seed-equality
+    // skip must not apply until it has (see Tick()'s own comment on why).
+    hasEncodedSinceSetup_ = false;
+    int degrees = RotationDegreesForOrientation(orientation);
+    bool swapped = degrees == 90 || degrees == 270;
+    int32_t width = swapped ? rawHeight : rawWidth;
+    int32_t height = swapped ? rawWidth : rawHeight;
+    sessionWidth_ = width;
+    sessionHeight_ = height;
     CMVideoCodecType codecType =
         options_.codec == VideoStreamCodec::kHEVC ? kCMVideoCodecType_HEVC : kCMVideoCodecType_H264;
     OSStatus status = VTCompressionSessionCreate(kCFAllocatorDefault, width, height, codecType, nullptr, nullptr,
@@ -332,11 +474,20 @@ class VideoFrameEncoder::Impl {
   // Returns whether a frame was actually submitted to the encoder — false for a transient
   // pixel-buffer creation failure the caller should retry, as opposed to a real encode failure
   // (thrown, not returned, since that tears down the whole session).
-  bool EncodeSurface(IOSurfaceRef surface) {
+  bool EncodeSurface(IOSurfaceRef surface, int32_t orientation) {
+    int degrees = RotationDegreesForOrientation(orientation);
     CVPixelBufferRef pixelBuffer = nullptr;
-    CVReturn cvStatus = CVPixelBufferCreateWithIOSurface(kCFAllocatorDefault, surface, nullptr, &pixelBuffer);
-    if (cvStatus != kCVReturnSuccess || pixelBuffer == nullptr) {
-      return false;  // transient — try again next tick rather than tearing down the whole session
+    if (degrees == 0) {
+      // The common case: zero-copy, exactly as before orientation correction existed.
+      CVReturn cvStatus = CVPixelBufferCreateWithIOSurface(kCFAllocatorDefault, surface, nullptr, &pixelBuffer);
+      if (cvStatus != kCVReturnSuccess || pixelBuffer == nullptr) {
+        return false;  // transient — try again next tick rather than tearing down the whole session
+      }
+    } else {
+      pixelBuffer = RotatedPixelBuffer(surface, degrees, ciContext_);
+      if (pixelBuffer == nullptr) {
+        return false;  // transient, same contract as the zero-copy path above
+      }
     }
     CMTime pts = CMTimeMake(static_cast<int64_t>((MonotonicSeconds() - startTime_) * 1000000), 1000000);
     NSDictionary* frameProperties = nil;
@@ -390,13 +541,32 @@ class VideoFrameEncoder::Impl {
   dispatch_queue_t queue_ = nullptr;
   dispatch_source_t timer_ = nullptr;
   VTCompressionSessionRef session_ = nullptr;
+  CIContext* ciContext_ = nil;
+  // The session's own post-rotation encode dimensions (what VTCompressionSessionCreate got).
+  int32_t sessionWidth_ = 0;
+  int32_t sessionHeight_ = 0;
+  // The raw IOSurface's dimensions as of the last SetUpSession — kept separate from
+  // sessionWidth_/sessionHeight_ so a rotation intentionally making them differ isn't mistaken for
+  // a raw resize.
+  int32_t rawSurfaceWidth_ = 0;
+  int32_t rawSurfaceHeight_ = 0;
+  // Orientation last baked into session_ — Tick() rebuilds when polledOrientation_ moves past this.
+  int32_t sessionOrientation_ = 1;
   uint32_t lastSeed_ = 0;
+  // Whether session_ has submitted a frame yet — see Tick()'s seed-equality skip.
+  bool hasEncodedSinceSetup_ = false;
   double startTime_ = 0;
   std::atomic<bool> running_{false};
   // Set by HandleEncodedSample (possibly off queue_) on an encoder failure, consumed by the next
   // Tick() (on queue_) — see both for why teardown can't just happen inline there.
   std::atomic<bool> pendingErrorTeardown_{false};
   std::atomic<bool> forceKeyFrame_{false};
+
+  // Last orientation StartOrientationPoll read; Tick() only ever reads this cheaply. A shared_ptr
+  // (not a plain member) since a poll's guest spawn can still be in flight when Stop()/~Impl runs
+  // — its completion must never touch a possibly-dead `this` (see CLAUDE.md).
+  std::shared_ptr<std::atomic<int32_t>> polledOrientation_ = std::make_shared<std::atomic<int32_t>>(1);
+  dispatch_source_t orientationPollTimer_ = nullptr;
 };
 
 VideoFrameEncoder::VideoFrameEncoder(id device, VideoEncoderOptions options,
