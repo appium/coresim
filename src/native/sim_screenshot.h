@@ -2,6 +2,9 @@
 
 #import <CoreGraphics/CoreGraphics.h>
 #import <Foundation/Foundation.h>
+#import <dispatch/dispatch.h>
+
+#include <cstdint>
 
 namespace coresim {
 
@@ -17,6 +20,22 @@ NSArray<NSDictionary*>* ListDisplays(id device, NSError** error);
 // screenshot — same displayId/fallback semantics, exposed for callers that need the descriptor
 // object itself (e.g. StartVideoRecording's `screen` argument).
 id ResolveCaptureDisplay(id device, NSString* displayId, NSError** error);
+
+// The device-wide "capture service" port (real protocol: SimScreenCaptureService — see CLAUDE.md),
+// distinct from a display descriptor (see ResolveCaptureDisplay above). Found by scanning ioPorts
+// since no header exists. Throws NativeSimUnavailableError (not NSError**) if absent.
+id ResolveScreenCaptureService(id device, NSError** error);
+
+// The primary display's current pixel dimensions via the active `SimScreenCaptureService` — the
+// same mechanism `simctl io <udid> screenshot`/StartVideoRecording use — rather than the in-process
+// read CaptureScreenshot does. An XPC round trip through a temp file, far slower than
+// CaptureScreenshot, but (unlike it) correctly reflects a live display resize such as a device
+// rotation (see CLAUDE.md); used only where that correctness matters more than speed
+// (IsPortraitOrientation). Returns NO+*error on synchronous resolution failure (`handler` never
+// called then); otherwise `handler` fires once with the result (0/0 and a non-nil error on
+// failure).
+BOOL CaptureDisplayDimensions(id device, NSString* displayId, dispatch_queue_t queue,
+                              void (^handler)(int32_t width, int32_t height, NSError* error), NSError** error);
 
 // The descriptor's current framebuffer as an `IOSurfaceRef` (bridge-cast the returned `id`).
 // Returns nil if not available yet (e.g. connection just dropped) — not an error, since that can

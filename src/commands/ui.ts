@@ -11,6 +11,7 @@ declare module '../native-simctl.js' {
     getContentSize(udid: string): Promise<number>;
     setContentSize(udid: string, category: number): Promise<void>;
     setOrientation(udid: string, orientation: DeviceOrientation): Promise<void>;
+    isPortraitOrientation(udid: string): Promise<boolean>;
   }
 }
 
@@ -72,4 +73,19 @@ export async function setContentSize(this: NativeSimctl, udid: string, category:
  */
 export async function setOrientation(this: NativeSimctl, udid: string, orientation: DeviceOrientation): Promise<void> {
   return runCatchingAsync(async () => (await this._findDevice(udid)).setOrientation(orientation));
+}
+
+/**
+ * Whether the device's screen is currently portrait-shaped (width <= height) — a dimension
+ * heuristic, since there's no reliable orientation-read API (see CLAUDE.md). true for a square
+ * screenshot, false only when strictly wider than tall.
+ *
+ * Captures via the same active mechanism `simctl io <udid> screenshot` uses — unlike
+ * {@link getScreenshot}'s fast in-process read, this correctly reflects a live device rotation, at
+ * the cost of a much slower (~1s) call (see CLAUDE.md).
+ *
+ * @param udid — UDID of the device to inspect; must be booted
+ */
+export async function isPortraitOrientation(this: NativeSimctl, udid: string): Promise<boolean> {
+  return runCatchingAsync(async () => (await this._findDevice(udid)).isPortraitOrientation());
 }

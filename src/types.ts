@@ -469,6 +469,7 @@ export interface NativeDeviceHandle {
   getWebInspectorSocket(): Promise<string>;
   screenshot(options?: {format?: 'png' | 'jpeg'; displayId?: string; quality?: number}): Promise<Buffer>;
   getDisplays(): Promise<SimDisplayInfo[]>;
+  isPortraitOrientation(): Promise<boolean>;
   // `mask` only applies without `audio`/`fps`; `bitrate` applies either way — see
   // VideoRecordingOptions's own doc comments for why. `onError` is only ever invoked on the
   // `audio`/`fps` (own-encoder) path — a live mid-recording failure, which the private recorder

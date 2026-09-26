@@ -1107,6 +1107,37 @@ class NativeDevice : public Napi::ObjectWrap<NativeDevice> {
         [](Napi::Env env, NSArray* result) -> Napi::Value { return NSObjectToJsValue(env, result); });
   }
 
+  Napi::Value IsPortraitOrientation(const Napi::CallbackInfo& info) {
+    id device = device_;
+    return RunAsync<bool>(
+        info.Env(),
+        [device]() -> bool {
+          dispatch_semaphore_t sema = dispatch_semaphore_create(0);
+          dispatch_queue_t queue =
+              dispatch_queue_create("io.appium.coresim.isPortraitOrientation", DISPATCH_QUEUE_SERIAL);
+          __block int32_t width = 0;
+          __block int32_t height = 0;
+          __block NSError* capturedError = nil;
+          NSError* resolveError = nil;
+          BOOL ok = coresim::CaptureDisplayDimensions(
+              device, nil, queue,
+              ^(int32_t w, int32_t h, NSError* asyncError) {
+                width = w;
+                height = h;
+                capturedError = asyncError;
+                dispatch_semaphore_signal(sema);
+              },
+              &resolveError);
+          ThrowIfFailed(ok, resolveError);
+          dispatch_semaphore_wait(sema, DISPATCH_TIME_FOREVER);
+          if (capturedError != nil) {
+            throw NSErrorException(capturedError);
+          }
+          return width <= height;
+        },
+        [](Napi::Env env, bool result) -> Napi::Value { return Napi::Boolean::New(env, result); });
+  }
+
   // Shared by StartVideoRecording (audio path)/StartVideoStream — `argIndex` is where the options
   // object (if any) sits in `info`.
   static coresim::VideoEncoderOptions ParseVideoEncoderOptions(const Napi::CallbackInfo& info, size_t argIndex) {
@@ -1736,6 +1767,7 @@ void NativeDevice::Init(Napi::Env env) {
                       InstanceMethod<&NativeDevice::GetWebInspectorSocket>("getWebInspectorSocket"),
                       InstanceMethod<&NativeDevice::Screenshot>("screenshot"),
                       InstanceMethod<&NativeDevice::GetDisplays>("getDisplays"),
+                      InstanceMethod<&NativeDevice::IsPortraitOrientation>("isPortraitOrientation"),
                       InstanceMethod<&NativeDevice::StartVideoRecording>("startVideoRecording"),
                       InstanceMethod<&NativeDevice::StartVideoStream>("startVideoStream"),
                       InstanceMethod<&NativeDevice::StartJpegStream>("startJpegStream"),

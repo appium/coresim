@@ -142,6 +142,26 @@ id RenderableSurface(id descriptor) {
 NSString* const kPNGUTI = @"public.png";
 NSString* const kJPEGUTI = @"public.jpeg";
 
+// Reads just a PNG's IHDR (width/height, big-endian uint32s at a fixed offset) without loading the
+// whole file — used by CaptureDisplayDimensions, which only ever needs the dimensions.
+BOOL ReadPNGDimensions(NSString* path, int32_t* outWidth, int32_t* outHeight, NSError** error) {
+  NSFileHandle* handle = [NSFileHandle fileHandleForReadingAtPath:path];
+  if (handle == nil) {
+    *error = MakeError(9, @"Failed to open the captured screenshot for reading");
+    return NO;
+  }
+  NSData* header = [handle readDataOfLength:24];
+  [handle closeFile];
+  if (header.length < 24) {
+    *error = MakeError(10, @"The captured screenshot file was shorter than a PNG header");
+    return NO;
+  }
+  const uint8_t* bytes = (const uint8_t*)header.bytes;
+  *outWidth = (bytes[16] << 24) | (bytes[17] << 16) | (bytes[18] << 8) | bytes[19];
+  *outHeight = (bytes[20] << 24) | (bytes[21] << 16) | (bytes[22] << 8) | bytes[23];
+  return YES;
+}
+
 }  // namespace
 
 id ResolveCaptureDisplay(id device, NSString* displayId, NSError** error) {
@@ -150,6 +170,69 @@ id ResolveCaptureDisplay(id device, NSString* displayId, NSError** error) {
     return nil;
   }
   return ResolveDisplayDescriptor(candidates, displayId, error);
+}
+
+// The real protocol is SimScreenCaptureService (see CLAUDE.md) — found by scanning ioPorts for
+// whichever descriptor responds to startRecordingFromScreen:..., since no header exists for it.
+id ResolveScreenCaptureService(id device, NSError** error) {
+  static const std::string kStartRecordingSelector =
+      "startRecordingFromScreen:maskPolicy:assetWriterOutputSettings:outputFile:completionQueue:completionHandler:";
+  id ioClient = IdGetter(device, "io");
+  if (ioClient == nil) {
+    *error = MakeError(11, @"Device has no IO client available — is it booted?");
+    return nil;
+  }
+  NSArray* ports = IdGetter(ioClient, "ioPorts");
+  SEL selector = NSSelectorFromString(@(kStartRecordingSelector.c_str()));
+  for (id port in ports) {
+    id descriptor = IdGetter(port, "descriptor");
+    if (descriptor != nil && [descriptor respondsToSelector:selector]) {
+      return descriptor;
+    }
+  }
+  throw NativeSimUnavailableError("selector", kStartRecordingSelector, CoreSimulatorFrameworkVersion());
+}
+
+BOOL CaptureDisplayDimensions(id device, NSString* displayId, dispatch_queue_t queue,
+                              void (^handler)(int32_t width, int32_t height, NSError* error), NSError** error) {
+  id captureService = ResolveScreenCaptureService(device, error);
+  if (captureService == nil) {
+    return NO;
+  }
+  id screen = ResolveCaptureDisplay(device, displayId, error);
+  if (screen == nil) {
+    return NO;
+  }
+  static const std::string kSelectorName =
+      "captureScreenshotFromScreen:maskPolicy:imageType:outputFile:completionQueue:completionHandler:";
+  RequireSelector(captureService, kSelectorName);
+  SEL selector = SelectorNamed(kSelectorName);
+
+  NSString* tempPath =
+      [NSTemporaryDirectory() stringByAppendingPathComponent:[[NSProcessInfo processInfo] globallyUniqueString]];
+
+  // Defined outside SafeInvoke's C++ lambda (not as a block literal nested inside it) so ARC gives
+  // it its own normal retain on `tempPath`/`handler` — this function returns as soon as the async
+  // call below is kicked off, well before this ever runs, so a capture that instead resolved
+  // through the lambda's own stack-scoped reference would be a use-after-return.
+  void (^completion)(NSError*) = ^(NSError* captureError) {
+    if (captureError != nil) {
+      [[NSFileManager defaultManager] removeItemAtPath:tempPath error:nil];
+      handler(0, 0, captureError);
+      return;
+    }
+    NSError* readError = nil;
+    int32_t width = 0, height = 0;
+    BOOL ok = ReadPNGDimensions(tempPath, &width, &height, &readError);
+    [[NSFileManager defaultManager] removeItemAtPath:tempPath error:nil];
+    handler(ok ? width : 0, ok ? height : 0, ok ? nil : readError);
+  };
+  return SafeInvoke([&] {
+    using Fn = void (*)(id, SEL, id, long long, NSString*, NSString*, dispatch_queue_t, void (^)(NSError*));
+    ((Fn)objc_msgSend)(captureService, selector, screen, 0LL /* maskPolicy: ignored */, kPNGUTI, tempPath, queue,
+                       completion);
+    return YES;
+  });
 }
 
 id CurrentDisplaySurface(id descriptor) { return RenderableSurface(descriptor); }

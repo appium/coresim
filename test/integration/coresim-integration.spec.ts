@@ -1048,6 +1048,12 @@ describe('NativeSimctl integration', () => {
           }
         });
 
+        it('detects the device is portrait via isPortraitOrientation', async () => {
+          // Unlike setOrientation, this doesn't go through LookupMachPort, so it isn't subject to
+          // the create-then-boot-in-process staleness above — a fresh boot is genuinely portrait.
+          assert.strictEqual(await sim.isPortraitOrientation(device!.udid), true);
+        });
+
         it('installs, inspects, launches, terminates, and removes an app', async () => {
           const appPath = await getUIKitCatalogPath();
           await sim.installApp(device!.udid, appPath);
