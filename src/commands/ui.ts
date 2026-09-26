@@ -11,7 +11,7 @@ declare module '../native-simctl.js' {
     getContentSize(udid: string): Promise<number>;
     setContentSize(udid: string, category: number): Promise<void>;
     setOrientation(udid: string, orientation: DeviceOrientation): Promise<void>;
-    isPortraitOrientation(udid: string): Promise<boolean>;
+    getOrientation(udid: string): Promise<DeviceOrientation>;
   }
 }
 
@@ -64,9 +64,9 @@ export async function setContentSize(this: NativeSimctl, udid: string, category:
 }
 
 /**
- * Rotates the device — the same effect as Simulator.app's Hardware > Rotate menu items. Write-only
- * (no reliable read-back exists) and known to silently no-op in two cases — see CLAUDE.md's "Known
- * gaps": a device-motion-capable runtime, and a device this same process both created and booted.
+ * Rotates the device — the same effect as Simulator.app's Hardware > Rotate menu items. Known to
+ * silently no-op in two cases — see CLAUDE.md's "Known gaps": a device-motion-capable runtime, and
+ * a device this same process both created and booted.
  *
  * @param udid — UDID of the target device
  * @param orientation — the orientation to rotate to
@@ -76,16 +76,13 @@ export async function setOrientation(this: NativeSimctl, udid: string, orientati
 }
 
 /**
- * Whether the device's screen is currently portrait-shaped (width <= height) — a dimension
- * heuristic, since there's no reliable orientation-read API (see CLAUDE.md). true for a square
- * screenshot, false only when strictly wider than tall.
- *
- * Captures via the same active mechanism `simctl io <udid> screenshot` uses — unlike
- * {@link getScreenshot}'s fast in-process read, this correctly reflects a live device rotation, at
- * the cost of a much slower (~1s) call (see CLAUDE.md).
+ * The device's current orientation — a live read (not just this process's own last
+ * {@link setOrientation} call), via a guest-spawned `defaults read` of a backboardd digitizer
+ * preference; see CLAUDE.md for how and its limits (notably: portrait until the frontmost app has
+ * actually rotated at least once this boot).
  *
  * @param udid — UDID of the device to inspect; must be booted
  */
-export async function isPortraitOrientation(this: NativeSimctl, udid: string): Promise<boolean> {
-  return runCatchingAsync(async () => (await this._findDevice(udid)).isPortraitOrientation());
+export async function getOrientation(this: NativeSimctl, udid: string): Promise<DeviceOrientation> {
+  return runCatchingAsync(async () => (await this._findDevice(udid)).getOrientation());
 }

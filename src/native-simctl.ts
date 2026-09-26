@@ -46,7 +46,7 @@ import {
   getAppearance,
   getContentSize,
   getIncreaseContrast,
-  isPortraitOrientation,
+  getOrientation,
   setAppearance,
   setContentSize,
   setIncreaseContrast,
@@ -232,7 +232,7 @@ Object.assign(NativeSimctl.prototype, {
   getContentSize,
   setContentSize,
   setOrientation,
-  isPortraitOrientation,
+  getOrientation,
 
   // permissions
   grantPermission,

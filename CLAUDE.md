@@ -242,42 +242,32 @@ toolchain (`make` and `xcodebuild`).
   time. Re-fetching via `-[SimDeviceSet devices]` doesn't help — CoreSimulator memoizes `SimDevice`
   by UDID, so it's the same object. Not root-caused (closed-source). Affects `setOrientation` and
   plausibly `getPasteboard`/`setPasteboard` (the only other `LookupMachPort` consumer).
-- **There's no true `getOrientation`; `isPortraitOrientation` is a coarse, one-bit stand-in.** Both
-  `dtuhidd`-based read paths (a legacy `devicecontrol.orientation` service, and a modern
-  motion-state query) fail on Xcode 27/iOS 27: the port lookup succeeds but the XPC connection is
-  immediately interrupted, not a boot-time race (retried). No CoreSimulator-level read API exists
-  either. `isPortraitOrientation` instead infers portrait/landscape from a live capture's pixel
-  dimensions (`CaptureDisplayDimensions` in `sim_screenshot.mm`) — see the next bullet for why that
-  capture, not a plain screenshot.
-- **`isPortraitOrientation` captures via the active `SimScreenCaptureService`
-  (`captureScreenshotFromScreen:maskPolicy:imageType:outputFile:completionQueue:completionHandler:`,
-  the same mechanism `simctl io <udid> screenshot` itself uses), not `CaptureScreenshot`'s
-  in-process `framebufferSurface` read — because after a rotation, `framebufferSurface` (and even
-  the "live" `SimScreen` push-callback registration) keeps returning the pre-rotation surface,
-  confirmed via `strings`/disassembly there's no client-side implementation to fix (a
-  `ROCKRemoteProxy` forwards it over XPC; the real logic is server-side, unreached from here) while
-  the active capture reliably returns the current dimensions.** This costs **~1s per call**
-  (measured: RAM disk vs `/tmp` made no difference — the XPC round trip itself is the entire cost,
-  not file I/O), so it's used only for `isPortraitOrientation`, not for `getScreenshot`, which stays
-  on the fast in-process read and inherits the same post-rotation staleness as a known limitation.
-  Shares `ResolveScreenCaptureService` with video recording, so it inherits that same confirmed
-  Xcode-16.4 `NativeSimUnavailableError` floor — its integration test skips on that error too.
-- **A block literal that must outlive its enclosing function must not be written inline inside a
-  `SafeInvoke([&] { ... })` C++ lambda if it captures that function's locals.** Crashed with a
-  delayed, async `SIGSEGV` (`CaptureDisplayDimensions`'s first version) — the block, nested inside
-  the lambda's reference-capturing (`[&]`) scope, didn't get its own independent ARC retain on
-  `tempPath`; by the time the async completion fired, the function had already returned and that
-  stack storage was gone. Fixed by declaring the block as a normal local (`void (^completion)(...)
-  = ^(...){ ... };`) *before* the `SafeInvoke` lambda, so ARC captures it the ordinary way — the
-  same pattern `StartVideoRecording` already used by simply passing its `handler` parameter through
-  directly instead of wrapping it in a new inline block.
+- **`getOrientation` reads live via a guest-spawned `defaults read` of `com.apple.backboardd`'s
+  `BKDigitizerPersistentServiceProperties`** (`sim_orientation.mm`) — a real, empirically-confirmed
+  signal, unlike the two `dtuhidd` XPC read paths, both dead on Xcode 27/iOS 27 (a CoreMotion-based
+  fallback checked too, also unavailable here). Costs a guest process spawn (~150ms via our own
+  `Spawn`, not `simctl`). One stale entry accumulates per boot on a reused device; the *last* entry
+  is always the live one (confirmed across repeated reboots). Its `GraphicsOrientation` swaps
+  landscape left/right vs. our own `DeviceOrientation` values (confirmed empirically) — see
+  `TranslateGraphicsOrientation`. Defaults to portrait if never rotated this boot, or on error.
+- **`startVideoStream`/`startVideoRecording({fps})` correct a rotated frame's orientation** — the
+  captured surface itself never reflects a live rotation (see above). `video_encoder.mm` polls
+  `getOrientation` every 5s (too slow to check per frame) and rotates via CoreImage before
+  encoding, rebuilding the `VTCompressionSession` at the rotated dimensions.
+  `RotationDegreesForOrientation`'s angles were verified empirically, not derived from enum names.
+  A block capturing a lambda's locals must not be written inline inside `SafeInvoke([&] {...})` if
+  it outlives the function — crashed once with a delayed `SIGSEGV`; declare it as a normal local
+  first instead.
+- **A writer-level append failure in `av_recording.mm` now also stops `videoEncoder_`, not just the
+  audio side** — dispatched async (see its own comment for why) rather than inline.
 
 ## Known gaps
 
 - No handling of a CoreSimulator/Xcode version mismatch requiring an upgrade (the way `simctl`'s own
   wrapper does).
 - `spawnProcess` has no writable `stdin`.
-- No true `getOrientation` — `isPortraitOrientation` is a slow (~1s), coarse (portrait/landscape
-  only) stand-in (see detailed bullets above).
+- `getOrientation` can lag a real rotation by up to 5s in a running video stream/recording (the
+  background poll interval — see detailed bullet above), and reads portrait for a device that's
+  never rotated this boot, indistinguishable from one that genuinely has.
 - A device created and booted in-process can silently drop `LookupMachPort` messages
   (`setOrientation`, pasteboard) for that process's lifetime (see detailed bullet above).

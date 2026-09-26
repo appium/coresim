@@ -771,6 +771,39 @@ describe('NativeSimctl integration', () => {
         }
       });
 
+      it('keeps streaming past an orientation poll tick without crashing', async (t) => {
+        // Rotation content correctness was verified manually — this suite's shared device can't
+        // reliably rotate (see "accepts setOrientation" above). Crash-safety only: run past the
+        // poll timer's first tick (every 5s) and confirm the stream is still healthy after.
+        let stream: Awaited<ReturnType<typeof sim.startVideoStream>>;
+        try {
+          stream = await sim.startVideoStream(device!.udid, {fps: 5});
+        } catch (err) {
+          if (err instanceof NativeSimUnavailableError) {
+            return t.skip(`video streaming unavailable on this CoreSimulator: ${err.message}`);
+          }
+          throw err;
+        }
+        try {
+          await sim.setOrientation(device!.udid, DeviceOrientation.LandscapeLeft);
+          await new Promise((resolve) => setTimeout(resolve, 6000));
+          await sim.setOrientation(device!.udid, DeviceOrientation.Portrait);
+
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), 10000);
+          try {
+            for await (const unit of stream.accessUnits(controller.signal)) {
+              assert.ok(unit.data.length > 0);
+              break;
+            }
+          } finally {
+            clearTimeout(timeout);
+          }
+        } finally {
+          await stream.stop();
+        }
+      });
+
       it('does not crash on exit after stop() while the stream wrapper is still referenced', async (t) => {
         const childScript = fileURLToPath(new URL('./av-abort-delivery-child.js', import.meta.url));
         try {
@@ -1048,19 +1081,10 @@ describe('NativeSimctl integration', () => {
           }
         });
 
-        it('detects the device is portrait via isPortraitOrientation', async (t) => {
-          // Unlike setOrientation, this doesn't go through LookupMachPort, so it isn't subject to
-          // the create-then-boot-in-process staleness above — a fresh boot is genuinely portrait.
-          try {
-            assert.strictEqual(await sim.isPortraitOrientation(device!.udid), true);
-          } catch (err) {
-            if (err instanceof NativeSimUnavailableError) {
-              // Shares ResolveScreenCaptureService with video recording — same confirmed-unavailable
-              // floor on this CoreSimulator (see CLAUDE.md).
-              return t.skip(`isPortraitOrientation unavailable on this CoreSimulator: ${err.message}`);
-            }
-            throw err;
-          }
+        it('detects the device orientation via getOrientation', async () => {
+          // Not subject to the LookupMachPort staleness above (goes through a guest-spawned
+          // `defaults read` instead) — reliably reads portrait, the default for an untouched boot.
+          assert.strictEqual(await sim.getOrientation(device!.udid), DeviceOrientation.Portrait);
         });
 
         it('installs, inspects, launches, terminates, and removes an app', async () => {

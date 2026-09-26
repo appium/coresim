@@ -32,6 +32,7 @@
 #include "native/sim_device.h"
 #include "native/sim_device_set.h"
 #include "native/sim_jpeg_stream.h"
+#include "native/sim_orientation.h"
 #include "native/sim_pasteboard.h"
 #include "native/sim_process.h"
 #include "native/sim_screenshot.h"
@@ -1107,35 +1108,21 @@ class NativeDevice : public Napi::ObjectWrap<NativeDevice> {
         [](Napi::Env env, NSArray* result) -> Napi::Value { return NSObjectToJsValue(env, result); });
   }
 
-  Napi::Value IsPortraitOrientation(const Napi::CallbackInfo& info) {
+  Napi::Value GetOrientation(const Napi::CallbackInfo& info) {
     id device = device_;
-    return RunAsync<bool>(
+    return RunAsync<int32_t>(
         info.Env(),
-        [device]() -> bool {
+        [device]() -> int32_t {
           dispatch_semaphore_t sema = dispatch_semaphore_create(0);
-          dispatch_queue_t queue =
-              dispatch_queue_create("io.appium.coresim.isPortraitOrientation", DISPATCH_QUEUE_SERIAL);
-          __block int32_t width = 0;
-          __block int32_t height = 0;
-          __block NSError* capturedError = nil;
-          NSError* resolveError = nil;
-          BOOL ok = coresim::CaptureDisplayDimensions(
-              device, nil, queue,
-              ^(int32_t w, int32_t h, NSError* asyncError) {
-                width = w;
-                height = h;
-                capturedError = asyncError;
-                dispatch_semaphore_signal(sema);
-              },
-              &resolveError);
-          ThrowIfFailed(ok, resolveError);
+          __block int32_t result = 1;
+          coresim::ReadGuestOrientation(device, ^(int32_t orientation) {
+            result = orientation;
+            dispatch_semaphore_signal(sema);
+          });
           dispatch_semaphore_wait(sema, DISPATCH_TIME_FOREVER);
-          if (capturedError != nil) {
-            throw NSErrorException(capturedError);
-          }
-          return width <= height;
+          return result;
         },
-        [](Napi::Env env, bool result) -> Napi::Value { return Napi::Boolean::New(env, result); });
+        [](Napi::Env env, int32_t result) -> Napi::Value { return Napi::Number::New(env, result); });
   }
 
   // Shared by StartVideoRecording (audio path)/StartVideoStream — `argIndex` is where the options
@@ -1767,7 +1754,7 @@ void NativeDevice::Init(Napi::Env env) {
                       InstanceMethod<&NativeDevice::GetWebInspectorSocket>("getWebInspectorSocket"),
                       InstanceMethod<&NativeDevice::Screenshot>("screenshot"),
                       InstanceMethod<&NativeDevice::GetDisplays>("getDisplays"),
-                      InstanceMethod<&NativeDevice::IsPortraitOrientation>("isPortraitOrientation"),
+                      InstanceMethod<&NativeDevice::GetOrientation>("getOrientation"),
                       InstanceMethod<&NativeDevice::StartVideoRecording>("startVideoRecording"),
                       InstanceMethod<&NativeDevice::StartVideoStream>("startVideoStream"),
                       InstanceMethod<&NativeDevice::StartJpegStream>("startJpegStream"),

@@ -83,7 +83,7 @@ class AVRecordingSession::Impl {
         [writer_ addInput:audioInput_];
       }
 
-      videoEncoder_ = std::make_unique<VideoFrameEncoder>(
+      videoEncoder_ = std::make_shared<VideoFrameEncoder>(
           device_, videoOptions_, [this](CMSampleBufferRef sampleBuffer) { HandleVideoSample(sampleBuffer); },
           [this](NSError* error) { Fail(error, /*fromVideo=*/true); }, [] {}, &clockOrigin_);
       videoEncoder_->Start();
@@ -319,14 +319,24 @@ class AVRecordingSession::Impl {
     return pending;
   }
 
-  // Called from either encoder's onError, or from HandleVideoSample on a writer-level failure —
-  // not holding mutex_ (could deadlock against that same encoder's own queue). Stops only the
-  // OTHER (still-running) encoder — the one whose callback we're inside is already tearing itself
-  // down on its own error path, and calling its own blocking Stop() here would deadlock.
+  // Called from either encoder's onError, or from HandleVideoSample on a writer-level append
+  // failure — not holding mutex_ (could deadlock against that encoder's own queue).
+  //
+  // fromVideo=true also needs videoEncoder_ itself stopped: a writer append failure leaves
+  // VideoToolbox otherwise healthy and encoding forever. But videoEncoder_->Stop() dispatch_syncs
+  // onto its own queue, and HandleVideoSample (VideoToolbox's own output callback) isn't
+  // guaranteed to be off that queue — so it's dispatched async instead, via a shared_ptr copy so
+  // the encoder outlives this Impl if that's torn down first.
   void Fail(NSError* error, bool fromVideo) {
     if (fromVideo) {
       if (audioTap_) {
         audioTap_->Stop();
+      }
+      if (videoEncoder_) {
+        std::shared_ptr<VideoFrameEncoder> encoder = videoEncoder_;
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0), ^{
+          encoder->Stop();
+        });
       }
     } else {
       if (videoEncoder_) {
@@ -394,7 +404,7 @@ class AVRecordingSession::Impl {
   std::function<void()> onEnd_;
 
   double clockOrigin_ = 0;
-  std::unique_ptr<VideoFrameEncoder> videoEncoder_;
+  std::shared_ptr<VideoFrameEncoder> videoEncoder_;
   std::unique_ptr<AudioTapSession> audioTap_;
   std::unique_ptr<AudioEncoder> audioEncoder_;
 
