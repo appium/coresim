@@ -1,4 +1,5 @@
 import type {NativeSimctl} from '../native-simctl.js';
+import type {DeviceOrientation} from '../types.js';
 import {runCatchingAsync} from '../utils/index.js';
 
 declare module '../native-simctl.js' {
@@ -9,6 +10,7 @@ declare module '../native-simctl.js' {
     setIncreaseContrast(udid: string, enabled: boolean): Promise<void>;
     getContentSize(udid: string): Promise<number>;
     setContentSize(udid: string, category: number): Promise<void>;
+    setOrientation(udid: string, orientation: DeviceOrientation): Promise<void>;
   }
 }
 
@@ -58,4 +60,16 @@ export async function getContentSize(this: NativeSimctl, udid: string): Promise<
  */
 export async function setContentSize(this: NativeSimctl, udid: string, category: number): Promise<void> {
   return runCatchingAsync(async () => (await this._findDevice(udid)).setContentSize(category));
+}
+
+/**
+ * Rotates the device — the same effect as Simulator.app's Hardware > Rotate menu items. Write-only
+ * (no reliable read-back exists) and known to silently no-op in two cases — see CLAUDE.md's "Known
+ * gaps": a device-motion-capable runtime, and a device this same process both created and booted.
+ *
+ * @param udid — UDID of the target device
+ * @param orientation — the orientation to rotate to
+ */
+export async function setOrientation(this: NativeSimctl, udid: string, orientation: DeviceOrientation): Promise<void> {
+  return runCatchingAsync(async () => (await this._findDevice(udid)).setOrientation(orientation));
 }

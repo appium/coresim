@@ -798,6 +798,15 @@ class NativeDevice : public Napi::ObjectWrap<NativeDevice> {
     });
   }
 
+  Napi::Value SetOrientation(const Napi::CallbackInfo& info) {
+    id device = device_;
+    int32_t orientation = info[0].As<Napi::Number>().Int32Value();
+    return RunAsyncVoid(info.Env(), [device, orientation]() {
+      NSError* error = nil;
+      ThrowIfFailed(coresim::SetDeviceOrientation(device, orientation, &error), error);
+    });
+  }
+
   Napi::Value SendPushNotification(const Napi::CallbackInfo& info) {
     id device = device_;
     NSString* bundleId = @(info[0].As<Napi::String>().Utf8Value().c_str());
@@ -1702,6 +1711,7 @@ void NativeDevice::Init(Napi::Env env) {
                       InstanceMethod<&NativeDevice::OpenUrl>("openUrl"),
                       InstanceMethod<&NativeDevice::SetLocation>("setLocation"),
                       InstanceMethod<&NativeDevice::ClearLocation>("clearLocation"),
+                      InstanceMethod<&NativeDevice::SetOrientation>("setOrientation"),
                       InstanceMethod<&NativeDevice::SendPushNotification>("sendPushNotification"),
                       InstanceMethod<&NativeDevice::AddCertificate>("addCertificate"),
                       InstanceMethod<&NativeDevice::ResetKeychain>("resetKeychain"),

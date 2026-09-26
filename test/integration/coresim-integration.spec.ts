@@ -12,6 +12,7 @@ import {promisify} from 'node:util';
 import {waitForCondition} from 'asyncbox';
 
 import {
+  DeviceOrientation,
   NativeSimctl,
   NativeSimError,
   NativeSimOperationError,
@@ -1031,6 +1032,20 @@ describe('NativeSimctl integration', () => {
             },
             {waitMs: 30000, intervalMs: 2000, error: 'expected openUrl to eventually succeed once the device settled'},
           );
+        });
+
+        it('accepts setOrientation for every orientation value without throwing', async () => {
+          // Not asserted against an actual screenshot rotation — this suite's throwaway device is
+          // created and booted in-process, which CoreSimulator silently no-ops mach delivery for
+          // (see CLAUDE.md). Confirmed manually, in a fresh process, that this actually rotates.
+          for (const orientation of [
+            DeviceOrientation.LandscapeLeft,
+            DeviceOrientation.LandscapeRight,
+            DeviceOrientation.PortraitUpsideDown,
+            DeviceOrientation.Portrait,
+          ]) {
+            await sim.setOrientation(device!.udid, orientation);
+          }
         });
 
         it('installs, inspects, launches, terminates, and removes an app', async () => {

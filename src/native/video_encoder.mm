@@ -266,6 +266,19 @@ class VideoFrameEncoder::Impl {
           return;  // transient — the connection may not have a frame ready yet, try again next tick
         }
         IOSurfaceRef surface = (__bridge IOSurfaceRef)surfaceObj;
+        if (static_cast<int32_t>(IOSurfaceGetWidth(surface)) != sessionWidth_ ||
+            static_cast<int32_t>(IOSurfaceGetHeight(surface)) != sessionHeight_) {
+          // The Simulator's screen surface itself resizes on rotation (unlike real hardware) — the
+          // session must be rebuilt for the new dimensions, or the encode below fails and kills the stream.
+          NSError* resizeError = nil;
+          if (!RecreateSessionForResize(surface, &resizeError)) {
+            if (onError_) {
+              onError_(resizeError);
+            }
+            StopFromQueue();
+            return;
+          }
+        }
         uint32_t seed = IOSurfaceGetSeed(surface);
         if (seed == lastSeed_) {
           return;  // unchanged since the last tick — mirrors CoreSimulator's own recorder, which
@@ -288,9 +301,23 @@ class VideoFrameEncoder::Impl {
     }
   }
 
+  // Tears down `session_` (if any) and recreates it for `surface`'s current dimensions. No explicit
+  // RequestKeyFrame() needed — a fresh session's first frame is a keyframe regardless.
+  bool RecreateSessionForResize(IOSurfaceRef surface, NSError** error) {
+    if (session_ != nullptr) {
+      VTCompressionSessionCompleteFrames(session_, kCMTimeInvalid);
+      VTCompressionSessionInvalidate(session_);
+      CFRelease(session_);
+      session_ = nullptr;
+    }
+    return SetUpSession(surface, error);
+  }
+
   bool SetUpSession(IOSurfaceRef surface, NSError** error) {
     int32_t width = static_cast<int32_t>(IOSurfaceGetWidth(surface));
     int32_t height = static_cast<int32_t>(IOSurfaceGetHeight(surface));
+    sessionWidth_ = width;
+    sessionHeight_ = height;
     CMVideoCodecType codecType =
         options_.codec == VideoStreamCodec::kHEVC ? kCMVideoCodecType_HEVC : kCMVideoCodecType_H264;
     OSStatus status = VTCompressionSessionCreate(kCFAllocatorDefault, width, height, codecType, nullptr, nullptr,
@@ -390,6 +417,8 @@ class VideoFrameEncoder::Impl {
   dispatch_queue_t queue_ = nullptr;
   dispatch_source_t timer_ = nullptr;
   VTCompressionSessionRef session_ = nullptr;
+  int32_t sessionWidth_ = 0;
+  int32_t sessionHeight_ = 0;
   uint32_t lastSeed_ = 0;
   double startTime_ = 0;
   std::atomic<bool> running_{false};

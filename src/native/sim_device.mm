@@ -1,6 +1,9 @@
 #include "sim_device.h"
 
+#import <mach/mach.h>
 #import <objc/message.h>
+
+#include <cstring>
 
 #include "objc_runtime.h"
 #include "safe_dispatch.h"
@@ -8,6 +11,12 @@
 namespace coresim {
 
 namespace {
+
+NSString* const kOrientationErrorDomain = @"io.appium.coresim.Orientation";
+
+NSError* MakeOrientationError(NSInteger code, NSString* message) {
+  return [NSError errorWithDomain:kOrientationErrorDomain code:code userInfo:@{NSLocalizedDescriptionKey : message}];
+}
 
 // Shared shapes reused across the many identical-signature getters/setters below.
 id IdGetter(id target, const std::string& selectorName) {
@@ -113,6 +122,49 @@ unsigned int LookupMachPort(id device, NSString* serviceName, NSError** error) {
     using Fn = unsigned int (*)(id, SEL, NSString*, NSError**);
     return ((Fn)objc_msgSend)(device, selector, serviceName, error);
   });
+}
+
+BOOL SetDeviceOrientation(id device, int32_t orientation, NSError** error) {
+  NSError* lookupError = nil;
+  unsigned int purplePort = LookupMachPort(device, @"PurpleWorkspacePort", &lookupError);
+  // The port is the authoritative success signal, not the error (see LookupMachPort's own callers,
+  // e.g. sim_pasteboard.mm).
+  if (purplePort == 0) {
+    *error = lookupError ?: MakeOrientationError(1, @"PurpleWorkspacePort is not available — is the device booted?");
+    return NO;
+  }
+
+  // GSEvent wire format, undocumented (see CLAUDE.md): mach_msg_header_t + a fixed-layout event
+  // record, in a 112-byte buffer (8-byte aligned, >= the 108-byte message mach_msg sends).
+  constexpr uint32_t kGSEventTypeDeviceOrientationChanged = 50;
+  constexpr uint32_t kGSEventHostFlag = 0x20000;
+  constexpr mach_msg_id_t kGSEventMachMessageID = 0x7B;
+  constexpr mach_msg_timeout_t kSendTimeoutMs = 2000;
+
+  uint8_t buffer[112] = {0};
+  auto* header = reinterpret_cast<mach_msg_header_t*>(buffer);
+  header->msgh_bits = 0x13;  // MACH_MSGH_BITS(MACH_MSG_TYPE_COPY_SEND, 0)
+  header->msgh_size = 108;   // align4(4 + 0x6B) — matches Simulator.app's own sendPurpleEvent:
+  header->msgh_remote_port = purplePort;
+  header->msgh_local_port = MACH_PORT_NULL;
+  header->msgh_id = kGSEventMachMessageID;
+
+  uint32_t type = kGSEventTypeDeviceOrientationChanged | kGSEventHostFlag;
+  std::memcpy(buffer + 0x18, &type, sizeof(type));
+  uint32_t recordInfoSize = 4;
+  std::memcpy(buffer + 0x48, &recordInfoSize, sizeof(recordInfoSize));
+  uint32_t orientationValue = static_cast<uint32_t>(orientation);
+  std::memcpy(buffer + 0x4C, &orientationValue, sizeof(orientationValue));
+
+  kern_return_t kr = mach_msg(header, MACH_SEND_MSG | MACH_SEND_TIMEOUT, header->msgh_size, 0, MACH_PORT_NULL,
+                              kSendTimeoutMs, MACH_PORT_NULL);
+  if (kr != KERN_SUCCESS) {
+    *error = MakeOrientationError(
+        2, [NSString stringWithFormat:@"Failed to send the orientation change (kern_return_t %d): %s", kr,
+                                      mach_error_string(kr)]);
+    return NO;
+  }
+  return YES;
 }
 
 BOOL InstallApp(id device, NSURL* appURL, NSDictionary* options, NSError** error) {

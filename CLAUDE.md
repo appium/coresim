@@ -224,9 +224,35 @@ toolchain (`make` and `xcodebuild`).
   (`spawnProcess`'s own PATH-like resolution, above, finds it under the runtime root), the same
   way `simctl spawn` would resolve it against the guest's `$PATH`. The runtime root itself is also
   exposed publicly as `getRuntimeRootPath`, for callers that need the raw path directly.
+- **`setOrientation` rotates the device via a raw GSEvent mach message to SpringBoard's
+  `PurpleWorkspacePort`** (`SetDeviceOrientation` in `sim_device.mm`) — the same mechanism
+  Simulator.app's Hardware > Rotate menu uses, recovered from Xcode's private `SimulatorApp/
+  GSEvent.h` (`CoreSimulator.framework` itself has no orientation API). A
+  `GSEventTypeDeviceOrientationChanged` message (`50 | 0x20000`) is hand-built into a 112-byte
+  buffer (mach header + record: type at `0x18`, size at `0x48`, orientation at `0x4C`) and sent via
+  `mach_msg` to the port `LookupMachPort` resolves for `"PurpleWorkspacePort"`. Confirmed working
+  end-to-end (screenshot dimensions swap on rotation) on Xcode 27/iOS 27. A newer `dtuhidd`/
+  CoreDevice XPC mechanism exists too (gated on the runtime reporting device-motion capability) but
+  had no visible effect here despite the daemon answering a liveness probe — Purple is what
+  actually works, with far less machinery.
+- **A `SimDevice` object created (pre-boot) by this process can silently stop delivering
+  `LookupMachPort` mach messages once the device boots — for the rest of that process's life —
+  even though the lookup keeps returning a valid, sendable port.** Confirmed via a minimal repro:
+  create + boot + send → no effect; a fresh process touching the same UDID after boot works every
+  time. Re-fetching via `-[SimDeviceSet devices]` doesn't help — CoreSimulator memoizes `SimDevice`
+  by UDID, so it's the same object. Not root-caused (closed-source). Affects `setOrientation` and
+  plausibly `getPasteboard`/`setPasteboard` (the only other `LookupMachPort` consumer).
+- **No orientation read-back (`getOrientation`) — `setOrientation` is write-only.** Both
+  `dtuhidd`-based read paths (a legacy `devicecontrol.orientation` service, and a modern
+  motion-state query) fail on Xcode 27/iOS 27: the port lookup succeeds but the XPC connection is
+  immediately interrupted, not a boot-time race (retried). No CoreSimulator-level read API exists
+  either.
 
 ## Known gaps
 
 - No handling of a CoreSimulator/Xcode version mismatch requiring an upgrade (the way `simctl`'s own
   wrapper does).
 - `spawnProcess` has no writable `stdin`.
+- No `getOrientation` — `setOrientation` is write-only (see detailed bullet above).
+- A device created and booted in-process can silently drop `LookupMachPort` messages
+  (`setOrientation`, pasteboard) for that process's lifetime (see detailed bullet above).

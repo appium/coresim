@@ -185,7 +185,7 @@ class AVRecordingSession::Impl {
           [writer_ startSessionAtSourceTime:CMSampleBufferGetPresentationTimeStamp(sampleBuffer)];
           writerStarted_ = true;
           justStarted = true;
-          AppendVideoLocked(sampleBuffer);
+          writingError = AppendVideoLocked(sampleBuffer);
           for (CMSampleBufferRef pending : pendingAudio_) {
             AppendAudioLocked(pending);
             CFRelease(pending);
@@ -195,7 +195,7 @@ class AVRecordingSession::Impl {
           writingError = writer_.error ?: MakeError(3, @"AVAssetWriter startWriting failed");
         }
       } else {
-        AppendVideoLocked(sampleBuffer);
+        writingError = AppendVideoLocked(sampleBuffer);
       }
     }
     if (writingError != nil) {
@@ -245,11 +245,16 @@ class AVRecordingSession::Impl {
     }
   }
 
-  // Caller holds mutex_.
-  void AppendVideoLocked(CMSampleBufferRef sampleBuffer) {
-    if (videoInput_.isReadyForMoreMediaData) {
-      [videoInput_ appendSampleBuffer:sampleBuffer];
+  // Caller holds mutex_. Returns a descriptive error if the append failed (e.g. a mid-recording
+  // rotation resizes the encoder but a track's dimensions are fixed for the writer's life), nil otherwise.
+  NSError* AppendVideoLocked(CMSampleBufferRef sampleBuffer) {
+    if (!videoInput_.isReadyForMoreMediaData) {
+      return nil;  // transient backpressure, not a failure
     }
+    if ([videoInput_ appendSampleBuffer:sampleBuffer]) {
+      return nil;
+    }
+    return writer_.error ?: MakeError(4, @"Failed to append a video sample to the recording");
   }
 
   // Caller holds mutex_.

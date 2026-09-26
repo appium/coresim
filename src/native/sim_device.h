@@ -2,6 +2,8 @@
 
 #import <Foundation/Foundation.h>
 
+#include <cstdint>
+
 namespace coresim {
 
 // -[SimDevice UDID] / -[SimDevice name] / -[SimDevice state] / -[SimDevice deviceType] /
@@ -63,6 +65,10 @@ NSString* Getenv(id device, NSString* name, NSError** error);
 // need no special entitlement — used to reach the pasteboard sync service (sim_pasteboard.h),
 // the same way Apple's own Simulator.app does.
 unsigned int LookupMachPort(id device, NSString* serviceName, NSError** error);
+
+// Rotates the device via a raw GSEvent mach message to SpringBoard's "PurpleWorkspacePort" (see
+// CLAUDE.md). `orientation`: 1=portrait, 2=portraitUpsideDown, 3=landscapeRight, 4=landscapeLeft.
+BOOL SetDeviceOrientation(id device, int32_t orientation, NSError** error);
 
 // -[SimDevice installApplication:withOptions:error:]
 BOOL InstallApp(id device, NSURL* appURL, NSDictionary* options, NSError** error);
