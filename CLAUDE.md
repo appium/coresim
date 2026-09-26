@@ -260,6 +260,8 @@ toolchain (`make` and `xcodebuild`).
   (measured: RAM disk vs `/tmp` made no difference — the XPC round trip itself is the entire cost,
   not file I/O), so it's used only for `isPortraitOrientation`, not for `getScreenshot`, which stays
   on the fast in-process read and inherits the same post-rotation staleness as a known limitation.
+  Shares `ResolveScreenCaptureService` with video recording, so it inherits that same confirmed
+  Xcode-16.4 `NativeSimUnavailableError` floor — its integration test skips on that error too.
 - **A block literal that must outlive its enclosing function must not be written inline inside a
   `SafeInvoke([&] { ... })` C++ lambda if it captures that function's locals.** Crashed with a
   delayed, async `SIGSEGV` (`CaptureDisplayDimensions`'s first version) — the block, nested inside

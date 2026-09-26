@@ -1048,10 +1048,19 @@ describe('NativeSimctl integration', () => {
           }
         });
 
-        it('detects the device is portrait via isPortraitOrientation', async () => {
+        it('detects the device is portrait via isPortraitOrientation', async (t) => {
           // Unlike setOrientation, this doesn't go through LookupMachPort, so it isn't subject to
           // the create-then-boot-in-process staleness above — a fresh boot is genuinely portrait.
-          assert.strictEqual(await sim.isPortraitOrientation(device!.udid), true);
+          try {
+            assert.strictEqual(await sim.isPortraitOrientation(device!.udid), true);
+          } catch (err) {
+            if (err instanceof NativeSimUnavailableError) {
+              // Shares ResolveScreenCaptureService with video recording — same confirmed-unavailable
+              // floor on this CoreSimulator (see CLAUDE.md).
+              return t.skip(`isPortraitOrientation unavailable on this CoreSimulator: ${err.message}`);
+            }
+            throw err;
+          }
         });
 
         it('installs, inspects, launches, terminates, and removes an app', async () => {
