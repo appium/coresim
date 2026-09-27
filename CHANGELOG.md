@@ -1,3 +1,9 @@
+## [1.9.0](https://github.com/appium/coresim/compare/v1.8.0...v1.9.0) (2026-09-27)
+
+### Features
+
+* add setOrientation and fix video/streaming session resize on device rotation ([#21](https://github.com/appium/coresim/issues/21)) ([3a73986](https://github.com/appium/coresim/commit/3a739869a7669076e764d05bb240f7a0e68cd9df))
+
 ## [1.8.0](https://github.com/appium/coresim/compare/v1.7.0...v1.8.0) (2026-09-25)
 
 ### Features
