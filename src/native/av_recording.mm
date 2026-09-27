@@ -30,7 +30,10 @@ class AVRecordingSession::Impl : public std::enable_shared_from_this<Impl> {
         udid_(udid),
         videoOptions_(videoOptions),
         outputFile_(outputFile),
-        captureAudio_(captureAudio) {}
+        captureAudio_(captureAudio) {
+    // Forced on regardless of what the caller passed — see VideoEncoderOptions::fixedFrameSize.
+    videoOptions_.fixedFrameSize = true;
+  }
 
   ~Impl() { TearDownIfNeeded(); }
 

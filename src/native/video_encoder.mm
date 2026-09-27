@@ -100,10 +100,19 @@ int RotationDegreesForOrientation(int32_t orientation) {
   }
 }
 
-// A rotated copy of `surface`'s frame, sized for `degrees` (swapped width/height at 90/270), via
-// CoreImage — the raw surface itself never reflects a live rotation (see CLAUDE.md). Caller owns
-// the result (CVPixelBufferRelease). Returns nullptr on any (transient) failure.
-CVPixelBufferRef RotatedPixelBuffer(IOSurfaceRef surface, int degrees, CIContext* context) {
+// A rotated copy of `surface`'s frame, via CoreImage — the raw surface itself never reflects a live
+// rotation (see CLAUDE.md). Caller owns the result (CVPixelBufferRelease). Returns nullptr on any
+// (transient) failure.
+//
+// `canvasWidth`/`canvasHeight` (both 0, or both positive): 0 sizes the output to the rotated
+// content itself (swapped at 90/270 — the default, used for streaming). A positive size instead
+// freezes the output at that size regardless of rotation, letterboxing the (possibly
+// differently-shaped) rotated content into it — required for AVRecordingSession, whose
+// AVAssetWriter track's dimensions are fixed for the file's life once the first frame is appended;
+// resizing later frames instead of letterboxing them corrupts playback (squashed video — see
+// CLAUDE.md).
+CVPixelBufferRef RotatedPixelBuffer(IOSurfaceRef surface, int degrees, CIContext* context, int32_t canvasWidth,
+                                    int32_t canvasHeight) {
   CIImage* image = [CIImage imageWithIOSurface:surface];
   if (image == nil) {
     return nullptr;
@@ -115,18 +124,37 @@ CVPixelBufferRef RotatedPixelBuffer(IOSurfaceRef surface, int degrees, CIContext
   CIImage* rotated = [image imageByApplyingTransform:rotate];
   CIImage* normalized = [rotated
       imageByApplyingTransform:CGAffineTransformMakeTranslation(-rotated.extent.origin.x, -rotated.extent.origin.y)];
-  size_t width = static_cast<size_t>(std::lround(normalized.extent.size.width));
-  size_t height = static_cast<size_t>(std::lround(normalized.extent.size.height));
+
+  BOOL letterbox = canvasWidth > 0 && canvasHeight > 0;
+  size_t width =
+      letterbox ? static_cast<size_t>(canvasWidth) : static_cast<size_t>(std::lround(normalized.extent.size.width));
+  size_t height =
+      letterbox ? static_cast<size_t>(canvasHeight) : static_cast<size_t>(std::lround(normalized.extent.size.height));
   if (width == 0 || height == 0) {
     return nullptr;
   }
+
+  CIImage* fitted = normalized;
+  CGRect bounds = normalized.extent;
+  if (letterbox) {
+    double scale = std::min(width / normalized.extent.size.width, height / normalized.extent.size.height);
+    CIImage* scaled = [normalized imageByApplyingTransform:CGAffineTransformMakeScale(scale, scale)];
+    double dx = (width - scaled.extent.size.width) / 2.0 - scaled.extent.origin.x;
+    double dy = (height - scaled.extent.size.height) / 2.0 - scaled.extent.origin.y;
+    CIImage* centered = [scaled imageByApplyingTransform:CGAffineTransformMakeTranslation(dx, dy)];
+    bounds = CGRectMake(0, 0, width, height);
+    // Composited over black so the letterboxed margins render as black bars, not undefined content
+    // (a fresh CVPixelBuffer's contents aren't otherwise guaranteed zeroed).
+    fitted = [centered imageByCompositingOverImage:[CIImage imageWithColor:[CIColor colorWithRed:0 green:0 blue:0]]];
+  }
+
   CVPixelBufferRef pixelBuffer = nullptr;
   CVReturn status =
       CVPixelBufferCreate(kCFAllocatorDefault, width, height, kCVPixelFormatType_32BGRA, nullptr, &pixelBuffer);
   if (status != kCVReturnSuccess || pixelBuffer == nullptr) {
     return nullptr;
   }
-  [context render:normalized toCVPixelBuffer:pixelBuffer bounds:normalized.extent colorSpace:nil];
+  [context render:fitted toCVPixelBuffer:pixelBuffer bounds:bounds colorSpace:nil];
   return pixelBuffer;
 }
 
@@ -370,7 +398,15 @@ class VideoFrameEncoder::Impl {
         int32_t orientation = polledOrientation_->load(std::memory_order_relaxed);
         int32_t rawWidth = static_cast<int32_t>(IOSurfaceGetWidth(surface));
         int32_t rawHeight = static_cast<int32_t>(IOSurfaceGetHeight(surface));
-        if (rawWidth != rawSurfaceWidth_ || rawHeight != rawSurfaceHeight_ || orientation != sessionOrientation_) {
+        if (options_.fixedFrameSize) {
+          // The session's encoded size is frozen at whatever it was on the first frame (see
+          // VideoEncoderOptions) — EncodeSurface letterboxes into it below, so a raw resize or
+          // rotation just needs this bookkeeping updated, never a session rebuild.
+          rawSurfaceWidth_ = rawWidth;
+          rawSurfaceHeight_ = rawHeight;
+          sessionOrientation_ = orientation;
+        } else if (rawWidth != rawSurfaceWidth_ || rawHeight != rawSurfaceHeight_ ||
+                   orientation != sessionOrientation_) {
           // Raw resize (some CoreSimulator versions) or an orientation change — either needs the
           // session rebuilt for the new effective dimensions.
           NSError* resizeError = nil;
@@ -476,15 +512,23 @@ class VideoFrameEncoder::Impl {
   // (thrown, not returned, since that tears down the whole session).
   bool EncodeSurface(IOSurfaceRef surface, int32_t orientation) {
     int degrees = RotationDegreesForOrientation(orientation);
+    int32_t rawWidth = static_cast<int32_t>(IOSurfaceGetWidth(surface));
+    int32_t rawHeight = static_cast<int32_t>(IOSurfaceGetHeight(surface));
+    // Zero-copy only applies when the raw surface already matches the session as-is — not just
+    // degrees == 0, since fixedFrameSize mode can also need letterboxing at zero rotation (a raw
+    // resize with no orientation change).
+    bool matchesSessionAsIs = degrees == 0 && rawWidth == sessionWidth_ && rawHeight == sessionHeight_;
     CVPixelBufferRef pixelBuffer = nullptr;
-    if (degrees == 0) {
+    if (matchesSessionAsIs) {
       // The common case: zero-copy, exactly as before orientation correction existed.
       CVReturn cvStatus = CVPixelBufferCreateWithIOSurface(kCFAllocatorDefault, surface, nullptr, &pixelBuffer);
       if (cvStatus != kCVReturnSuccess || pixelBuffer == nullptr) {
         return false;  // transient — try again next tick rather than tearing down the whole session
       }
     } else {
-      pixelBuffer = RotatedPixelBuffer(surface, degrees, ciContext_);
+      int32_t canvasWidth = options_.fixedFrameSize ? sessionWidth_ : 0;
+      int32_t canvasHeight = options_.fixedFrameSize ? sessionHeight_ : 0;
+      pixelBuffer = RotatedPixelBuffer(surface, degrees, ciContext_, canvasWidth, canvasHeight);
       if (pixelBuffer == nullptr) {
         return false;  // transient, same contract as the zero-copy path above
       }

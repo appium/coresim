@@ -147,6 +147,45 @@ async function readTCCGranted(udid: string, tccService: string, bundleId: string
   );
 }
 
+/** The host-side path to a device's own copy of backboardd's preference file (see sim_orientation.mm). */
+function backboardPlistPath(udid: string): string {
+  return path.join(
+    os.homedir(),
+    'Library',
+    'Developer',
+    'CoreSimulator',
+    'Devices',
+    udid,
+    'data',
+    'Library',
+    'Preferences',
+    'com.apple.backboardd.plist',
+  );
+}
+
+/**
+ * Overwrites `plistPath`'s `BKDigitizerPersistentServiceProperties` with a single fresh entry
+ * reporting `graphicsOrientation` — a way to simulate a rotation for getOrientation/video_encoder.mm
+ * to pick up without relying on setOrientation, whose mach delivery no-ops for a device created and
+ * booted in-process (see the "accepts setOrientation" test).
+ */
+async function injectGraphicsOrientation(plistPath: string, graphicsOrientation: number): Promise<void> {
+  await execFileAsync('/usr/libexec/PlistBuddy', [
+    '-c',
+    'Delete :BKDigitizerPersistentServiceProperties',
+    plistPath,
+  ]).catch(() => {});
+  for (const command of [
+    'Add :BKDigitizerPersistentServiceProperties array',
+    'Add :BKDigitizerPersistentServiceProperties:0 dict',
+    'Add :BKDigitizerPersistentServiceProperties:0:props dict',
+    `Add :BKDigitizerPersistentServiceProperties:0:props:GraphicsOrientation integer ${graphicsOrientation}`,
+  ]) {
+    await execFileAsync('/usr/libexec/PlistBuddy', ['-c', command, plistPath]);
+  }
+  await fs.promises.utimes(plistPath, new Date(), new Date());
+}
+
 interface RuntimeFixture {
   runtimeIdentifier: string;
   runtimeName: string;
@@ -659,6 +698,65 @@ describe('NativeSimctl integration', () => {
         }
       });
 
+      it('keeps a recording track at a fixed size across a mid-recording rotation', async (t) => {
+        // Regression test: an AVAssetWriter track's dimensions are fixed once the first frame is
+        // appended — a rotated frame must be letterboxed into that original size, not resized to
+        // it, or playback comes out squashed rather than erroring (see CLAUDE.md). Only the fps
+        // (AVRecordingSession/av_recording.mm) path uses AVAssetWriter — startVideoStream has no
+        // such constraint and keeps swapping dimensions on rotation, unaffected by this.
+        if (!(await hasFfmpeg())) {
+          return t.skip('ffmpeg/ffprobe not installed');
+        }
+        const outputFile = path.join(os.tmpdir(), `coresim-video-test-rotate-${Date.now()}-${process.pid}.mp4`);
+        const plistPath = backboardPlistPath(device!.udid);
+        const originalPlist = await fs.promises.readFile(plistPath).catch(() => null);
+        try {
+          try {
+            await sim.startVideoRecording(device!.udid, outputFile, {fps: 10});
+          } catch (err) {
+            if (err instanceof NativeSimUnavailableError) {
+              return t.skip(`video recording unavailable on this CoreSimulator: ${err.message}`);
+            }
+            throw err;
+          }
+          // Let the writer establish its track at the native (portrait) dimensions first.
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+          // setOrientation's mach delivery no-ops for this suite's in-process device (see the
+          // "accepts setOrientation" test) — inject the rotation instead, the same way the
+          // getOrientation staleness test does, so the encoder's poll (every 3s) picks it up.
+          await injectGraphicsOrientation(plistPath, 3);
+          await new Promise((resolve) => setTimeout(resolve, 4000));
+          await sim.stopVideoRecording(device!.udid);
+
+          const {stdout} = await execFileAsync('ffprobe', [
+            '-v',
+            'error',
+            '-select_streams',
+            'v:0',
+            '-show_entries',
+            'frame=width,height',
+            '-of',
+            'csv=p=0',
+            outputFile,
+          ]);
+          // A keyframe's row has trailing side-data fields (e.g. an SEI message) csv=p=0 still
+          // includes despite the explicit show_entries — keep only the width,height prefix.
+          const dimensions = new Set(
+            stdout
+              .trim()
+              .split('\n')
+              .filter(Boolean)
+              .map((line) => line.split(',').slice(0, 2).join('x')),
+          );
+          assert.strictEqual(dimensions.size, 1, `expected one fixed frame size throughout, got: ${[...dimensions]}`);
+        } finally {
+          await fs.promises.rm(outputFile, {force: true});
+          if (originalPlist) {
+            await fs.promises.writeFile(plistPath, originalPlist);
+          }
+        }
+      });
+
       it('records a video with audio, muxed as a second AAC track', async (t) => {
         if (IS_CI) {
           return t.skip('audio capture can block for ~180s (MACH_RCV_TIMED_OUT) on some CI runners — see CLAUDE.md');
@@ -1093,34 +1191,10 @@ describe('NativeSimctl integration', () => {
           // must not report that stale entry as current (see CLAUDE.md). setOrientation can't set up
           // this scenario for real (its mach delivery no-ops for this suite's in-process device —
           // see the test above), so the stale entry is injected directly instead.
-          const plistPath = path.join(
-            os.homedir(),
-            'Library',
-            'Developer',
-            'CoreSimulator',
-            'Devices',
-            device!.udid,
-            'data',
-            'Library',
-            'Preferences',
-            'com.apple.backboardd.plist',
-          );
+          const plistPath = backboardPlistPath(device!.udid);
           const original = await fs.promises.readFile(plistPath).catch(() => null);
           try {
-            await execFileAsync('/usr/libexec/PlistBuddy', [
-              '-c',
-              'Delete :BKDigitizerPersistentServiceProperties',
-              plistPath,
-            ]).catch(() => {});
-            for (const command of [
-              'Add :BKDigitizerPersistentServiceProperties array',
-              'Add :BKDigitizerPersistentServiceProperties:0 dict',
-              'Add :BKDigitizerPersistentServiceProperties:0:props dict',
-              'Add :BKDigitizerPersistentServiceProperties:0:props:GraphicsOrientation integer 2',
-            ]) {
-              await execFileAsync('/usr/libexec/PlistBuddy', ['-c', command, plistPath]);
-            }
-
+            await injectGraphicsOrientation(plistPath, 2);
             await fs.promises.utimes(plistPath, new Date(0), new Date(0));
             assert.strictEqual(await sim.getOrientation(device!.udid), DeviceOrientation.Portrait);
 
