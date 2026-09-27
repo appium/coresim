@@ -21,6 +21,11 @@ id DeviceRuntime(id device);
 // privacy-permission access (see tcc_privacy.h).
 NSString* DeviceDataPath(id device);
 
+// -[SimDevice lastBootedAt] -> the current boot session's start time (nil if never booted). Used to
+// tell a guest preference file that predates this boot from one already rewritten this boot (see
+// sim_orientation.mm).
+NSDate* DeviceLastBootedAt(id device);
+
 // -[SimDevice bootWithOptions:error:]
 BOOL Boot(id device, NSDictionary* options, NSError** error);
 

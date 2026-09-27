@@ -242,14 +242,17 @@ toolchain (`make` and `xcodebuild`).
   time. Re-fetching via `-[SimDeviceSet devices]` doesn't help — CoreSimulator memoizes `SimDevice`
   by UDID, so it's the same object. Not root-caused (closed-source). Affects `setOrientation` and
   plausibly `getPasteboard`/`setPasteboard` (the only other `LookupMachPort` consumer).
-- **`getOrientation` reads live via a guest-spawned `defaults read` of `com.apple.backboardd`'s
-  `BKDigitizerPersistentServiceProperties`** (`sim_orientation.mm`) — a real, empirically-confirmed
-  signal, unlike the two `dtuhidd` XPC read paths, both dead on Xcode 27/iOS 27 (a CoreMotion-based
-  fallback checked too, also unavailable here). Costs a guest process spawn (~150ms via our own
-  `Spawn`, not `simctl`). One stale entry accumulates per boot on a reused device; the *last* entry
-  is always the live one (confirmed across repeated reboots). Its `GraphicsOrientation` swaps
+- **`getOrientation` reads live off `com.apple.backboardd`'s own preference file, directly from the
+  host side** (`sim_orientation.mm`, `DeviceDataPath`'s `Library/Preferences/com.apple.backboardd.plist`
+  — same "read the guest's own file, no entitlement" pattern as `tcc_privacy.mm`) — a real,
+  empirically-confirmed signal, unlike the two `dtuhidd` XPC read paths, both dead on Xcode 27/iOS 27
+  (a CoreMotion-based fallback checked too, also unavailable here). Its `GraphicsOrientation` swaps
   landscape left/right vs. our own `DeviceOrientation` values (confirmed empirically) — see
   `TranslateGraphicsOrientation`. Defaults to portrait if never rotated this boot, or on error.
+  A rebooted device's file can still hold the *previous* boot's last entry for a few seconds until
+  backboardd rewrites it (confirmed empirically) — guarded by comparing the file's mtime against
+  `SimDevice.lastBootedAt`; a file older than the current boot is treated as empty rather than
+  trusted.
 - **`startVideoStream`/`startVideoRecording({fps})` correct a rotated frame's orientation** — the
   captured surface itself never reflects a live rotation (see above). `video_encoder.mm` polls
   `getOrientation` every 5s (too slow to check per frame) and rotates via CoreImage before
@@ -259,7 +262,11 @@ toolchain (`make` and `xcodebuild`).
   it outlives the function — crashed once with a delayed `SIGSEGV`; declare it as a normal local
   first instead.
 - **A writer-level append failure in `av_recording.mm` now also stops `videoEncoder_`, not just the
-  audio side** — dispatched async (see its own comment for why) rather than inline.
+  audio side** — dispatched async (see its own comment for why) rather than inline. That async
+  `Stop()` can still flush a frame into a callback afterward, so `AVRecordingSession::Impl` is
+  `enable_shared_from_this`; its collaborators' callbacks capture a `weak_ptr`, locked at call time —
+  a strong self-capture stored in a member `Impl` itself owns (`videoEncoder_`, `audioTap_`) would
+  leak via a reference cycle instead.
 
 ## Known gaps
 

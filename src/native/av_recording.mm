@@ -23,7 +23,7 @@ constexpr size_t kMaxPendingAudioSamples = 500;  // a few seconds of AAC packets
 
 }  // namespace
 
-class AVRecordingSession::Impl {
+class AVRecordingSession::Impl : public std::enable_shared_from_this<Impl> {
  public:
   Impl(id device, NSString* udid, VideoEncoderOptions videoOptions, NSString* outputFile, bool captureAudio)
       : device_(device),
@@ -49,18 +49,31 @@ class AVRecordingSession::Impl {
       throw NSErrorException(writerError ?: MakeError(1, @"Failed to create an AVAssetWriter"));
     }
 
+    // A weak_ptr (not `this`, and not a strong shared_ptr) captured by every callback handed to a
+    // collaborator below: `this` would dangle if a callback fires mid-teardown (see Fail()'s own
+    // comment), but a strong self-capture stored in a member `this` itself owns (videoEncoder_,
+    // audioTap_) would leak instead, keeping this Impl alive forever via a reference cycle. Locking
+    // it at call time gets safety without either problem.
+    std::weak_ptr<Impl> weakSelf = weak_from_this();
     try {
       if (captureAudio_) {
         audioTap_ = std::make_unique<AudioTapSession>(
-            udid_, [this](const AudioBufferList* data, const AudioTimeStamp* time) { HandleAudioPCM(data, time); },
-            [this](NSError* error) {
+            udid_,
+            [weakSelf](const AudioBufferList* data, const AudioTimeStamp* time) {
+              if (auto self = weakSelf.lock()) {
+                self->HandleAudioPCM(data, time);
+              }
+            },
+            [weakSelf](NSError* error) {
               // A failed process-list refresh (kAudioTapNonFatalProcessListRefreshErrorCode) isn't
               // fatal — the tap keeps running. Everything else is.
               if ([error.domain isEqualToString:kAudioTapErrorDomain] &&
                   error.code == kAudioTapNonFatalProcessListRefreshErrorCode) {
                 return;
               }
-              Fail(error, /*fromVideo=*/false);
+              if (auto self = weakSelf.lock()) {
+                self->Fail(error, /*fromVideo=*/false);
+              }
             },
             [] {});
         audioTap_->Start();
@@ -68,7 +81,12 @@ class AVRecordingSession::Impl {
         // Start() can invoke HandleAudioPCM before returning, so audioEncoder_ is written under
         // mutex_ (same lock HandleAudioPCM reads it under) to avoid a torn/racy pointer read.
         auto encoder = std::make_unique<AudioEncoder>(
-            audioTap_->Format(), [this](CMSampleBufferRef sampleBuffer) { HandleAudioSample(sampleBuffer); },
+            audioTap_->Format(),
+            [weakSelf](CMSampleBufferRef sampleBuffer) {
+              if (auto self = weakSelf.lock()) {
+                self->HandleAudioSample(sampleBuffer);
+              }
+            },
             &clockOrigin_);
         {
           std::lock_guard<std::mutex> lock(mutex_);
@@ -84,8 +102,18 @@ class AVRecordingSession::Impl {
       }
 
       videoEncoder_ = std::make_shared<VideoFrameEncoder>(
-          device_, videoOptions_, [this](CMSampleBufferRef sampleBuffer) { HandleVideoSample(sampleBuffer); },
-          [this](NSError* error) { Fail(error, /*fromVideo=*/true); }, [] {}, &clockOrigin_);
+          device_, videoOptions_,
+          [weakSelf](CMSampleBufferRef sampleBuffer) {
+            if (auto self = weakSelf.lock()) {
+              self->HandleVideoSample(sampleBuffer);
+            }
+          },
+          [weakSelf](NSError* error) {
+            if (auto self = weakSelf.lock()) {
+              self->Fail(error, /*fromVideo=*/true);
+            }
+          },
+          [] {}, &clockOrigin_);
       videoEncoder_->Start();
     } catch (...) {
       TearDownIfNeeded();
@@ -325,23 +353,17 @@ class AVRecordingSession::Impl {
   // fromVideo=true also needs videoEncoder_ itself stopped: a writer append failure leaves
   // VideoToolbox otherwise healthy and encoding forever. But videoEncoder_->Stop() dispatch_syncs
   // onto its own queue, and HandleVideoSample (VideoToolbox's own output callback) isn't
-  // guaranteed to be off that queue — so it's dispatched async instead, via a shared_ptr copy so
-  // the encoder outlives this Impl if that's torn down first.
+  // guaranteed to be off that queue — so it's dispatched async instead, via a shared_ptr `encoder`
+  // copy that can outlive this Impl. Stop() can still flush a pending frame into onSample_/onError_
+  // synchronously; those hold only a weak_ptr (see Start()), but `self` below keeps it resolvable
+  // for the duration of this block. onEnd_ waits until that's done, not fired eagerly here.
   void Fail(NSError* error, bool fromVideo) {
     if (fromVideo) {
       if (audioTap_) {
         audioTap_->Stop();
       }
-      if (videoEncoder_) {
-        std::shared_ptr<VideoFrameEncoder> encoder = videoEncoder_;
-        dispatch_async(dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0), ^{
-          encoder->Stop();
-        });
-      }
-    } else {
-      if (videoEncoder_) {
-        videoEncoder_->Stop();
-      }
+    } else if (videoEncoder_) {
+      videoEncoder_->Stop();
     }
     std::vector<std::function<void(NSError*)>> pending;
     {
@@ -353,7 +375,16 @@ class AVRecordingSession::Impl {
         callback(error);
       }
     }
-    FireEndOnce();
+    if (fromVideo && videoEncoder_) {
+      std::shared_ptr<VideoFrameEncoder> encoder = videoEncoder_;
+      std::shared_ptr<Impl> self = shared_from_this();
+      dispatch_async(dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0), ^{
+        encoder->Stop();
+        self->FireEndOnce();
+      });
+    } else {
+      FireEndOnce();
+    }
   }
 
   // The single point where a real (first-ever) Stop() attempt's outcome becomes known — records
@@ -425,7 +456,7 @@ class AVRecordingSession::Impl {
 
 AVRecordingSession::AVRecordingSession(id device, NSString* udid, VideoEncoderOptions videoOptions,
                                        NSString* outputFile, bool captureAudio)
-    : impl_(std::make_unique<Impl>(device, udid, videoOptions, outputFile, captureAudio)) {}
+    : impl_(std::make_shared<Impl>(device, udid, videoOptions, outputFile, captureAudio)) {}
 
 AVRecordingSession::~AVRecordingSession() = default;
 

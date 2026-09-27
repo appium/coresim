@@ -1082,9 +1082,57 @@ describe('NativeSimctl integration', () => {
         });
 
         it('detects the device orientation via getOrientation', async () => {
-          // Not subject to the LookupMachPort staleness above (goes through a guest-spawned
-          // `defaults read` instead) — reliably reads portrait, the default for an untouched boot.
+          // Not subject to the LookupMachPort staleness above (reads backboardd's own preference
+          // file directly instead) — reliably reads portrait, the default for an untouched boot.
           assert.strictEqual(await sim.getOrientation(device!.udid), DeviceOrientation.Portrait);
+        });
+
+        it('ignores a getOrientation entry that predates the current boot', async () => {
+          // Regression test: a reboot can leave the previous boot's entry in backboardd's
+          // preference file until it rewrites it, sometimes several seconds later — getOrientation
+          // must not report that stale entry as current (see CLAUDE.md). setOrientation can't set up
+          // this scenario for real (its mach delivery no-ops for this suite's in-process device —
+          // see the test above), so the stale entry is injected directly instead.
+          const plistPath = path.join(
+            os.homedir(),
+            'Library',
+            'Developer',
+            'CoreSimulator',
+            'Devices',
+            device!.udid,
+            'data',
+            'Library',
+            'Preferences',
+            'com.apple.backboardd.plist',
+          );
+          const original = await fs.promises.readFile(plistPath).catch(() => null);
+          try {
+            await execFileAsync('/usr/libexec/PlistBuddy', [
+              '-c',
+              'Delete :BKDigitizerPersistentServiceProperties',
+              plistPath,
+            ]).catch(() => {});
+            for (const command of [
+              'Add :BKDigitizerPersistentServiceProperties array',
+              'Add :BKDigitizerPersistentServiceProperties:0 dict',
+              'Add :BKDigitizerPersistentServiceProperties:0:props dict',
+              'Add :BKDigitizerPersistentServiceProperties:0:props:GraphicsOrientation integer 2',
+            ]) {
+              await execFileAsync('/usr/libexec/PlistBuddy', ['-c', command, plistPath]);
+            }
+
+            await fs.promises.utimes(plistPath, new Date(0), new Date(0));
+            assert.strictEqual(await sim.getOrientation(device!.udid), DeviceOrientation.Portrait);
+
+            // Control: the same entry IS honored once it's no longer backdated — proves the
+            // assertion above exercises the staleness gate, not an unrelated parse failure.
+            await fs.promises.utimes(plistPath, new Date(), new Date());
+            assert.strictEqual(await sim.getOrientation(device!.udid), DeviceOrientation.PortraitUpsideDown);
+          } finally {
+            if (original) {
+              await fs.promises.writeFile(plistPath, original);
+            }
+          }
         });
 
         it('installs, inspects, launches, terminates, and removes an app', async () => {

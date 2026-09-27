@@ -62,6 +62,7 @@ NSString* DeviceName(id device) { return IdGetter(device, "name"); }
 id DeviceDeviceType(id device) { return IdGetter(device, "deviceType"); }
 id DeviceRuntime(id device) { return IdGetter(device, "runtime"); }
 NSString* DeviceDataPath(id device) { return IdGetter(device, "dataPath"); }
+NSDate* DeviceLastBootedAt(id device) { return IdGetter(device, "lastBootedAt"); }
 
 unsigned long long DeviceState(id device) {
   static const std::string kSelectorName = "state";
