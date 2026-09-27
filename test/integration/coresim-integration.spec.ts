@@ -774,7 +774,7 @@ describe('NativeSimctl integration', () => {
       it('keeps streaming past an orientation poll tick without crashing', async (t) => {
         // Rotation content correctness was verified manually — this suite's shared device can't
         // reliably rotate (see "accepts setOrientation" above). Crash-safety only: run past the
-        // poll timer's first tick (every 5s) and confirm the stream is still healthy after.
+        // poll timer's first tick (every 3s) and confirm the stream is still healthy after.
         let stream: Awaited<ReturnType<typeof sim.startVideoStream>>;
         try {
           stream = await sim.startVideoStream(device!.udid, {fps: 5});

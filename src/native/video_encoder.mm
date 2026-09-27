@@ -276,15 +276,15 @@ class VideoFrameEncoder::Impl {
     return result;
   }
 
-  // Keeps polledOrientation_ fresh against a rotation from any source (see CLAUDE.md). Slow
-  // (~150ms/read) by design — rotations are infrequent, and Tick() must stay cheap.
+  // Keeps polledOrientation_ fresh against a rotation from any source (see CLAUDE.md). Off queue_ by
+  // design, not because it's slow — Tick() must stay cheap regardless.
   void StartOrientationPoll() {
     std::shared_ptr<std::atomic<int32_t>> cell = polledOrientation_;
     id device = device_;
     dispatch_queue_t pollQueue =
         dispatch_queue_create("io.appium.coresim.videoEncoder.orientationPoll", DISPATCH_QUEUE_SERIAL);
     dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, pollQueue);
-    constexpr int64_t kPollIntervalSeconds = 5;
+    constexpr int64_t kPollIntervalSeconds = 3;
     // Starts one interval out — Start() already seeded polledOrientation_ synchronously.
     dispatch_source_set_timer(timer, dispatch_time(DISPATCH_TIME_NOW, kPollIntervalSeconds * NSEC_PER_SEC),
                               kPollIntervalSeconds * NSEC_PER_SEC, NSEC_PER_SEC);

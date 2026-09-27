@@ -255,7 +255,7 @@ toolchain (`make` and `xcodebuild`).
   trusted.
 - **`startVideoStream`/`startVideoRecording({fps})` correct a rotated frame's orientation** — the
   captured surface itself never reflects a live rotation (see above). `video_encoder.mm` polls
-  `getOrientation` every 5s (too slow to check per frame) and rotates via CoreImage before
+  `getOrientation` every 3s (not on every tick, to keep `Tick()` itself cheap) and rotates via CoreImage before
   encoding, rebuilding the `VTCompressionSession` at the rotated dimensions.
   `RotationDegreesForOrientation`'s angles were verified empirically, not derived from enum names.
   A block capturing a lambda's locals must not be written inline inside `SafeInvoke([&] {...})` if
@@ -273,7 +273,7 @@ toolchain (`make` and `xcodebuild`).
 - No handling of a CoreSimulator/Xcode version mismatch requiring an upgrade (the way `simctl`'s own
   wrapper does).
 - `spawnProcess` has no writable `stdin`.
-- `getOrientation` can lag a real rotation by up to 5s in a running video stream/recording (the
+- `getOrientation` can lag a real rotation by up to 3s in a running video stream/recording (the
   background poll interval — see detailed bullet above), and reads portrait for a device that's
   never rotated this boot, indistinguishable from one that genuinely has.
 - A device created and booted in-process can silently drop `LookupMachPort` messages
