@@ -267,7 +267,11 @@ toolchain (`make` and `xcodebuild`).
   are fixed once the first sample is appended; a later, differently-sized sample is silently
   accepted but plays back squashed rather than rejected (confirmed empirically — reproduced on
   iPhone 16 Pro/iOS 26.5). `RotatedPixelBuffer` scales the rotated content to fit the frozen canvas
-  and composites it over black.
+  and composites it over black. In `fixedFrameSize` mode, `Tick()` clears `hasEncodedSinceSetup_`
+  whenever the polled orientation or raw surface size actually changes, forcing the next tick to
+  encode regardless of `IOSurfaceGetSeed()` — otherwise a rotation on an otherwise-unchanging screen
+  (the raw surface's seed doesn't bump on its own) could go uncorrected indefinitely, since the
+  seed-equality skip has no other way to know a re-render is owed.
 - **A writer-level append failure in `av_recording.mm` now also stops `videoEncoder_`, not just the
   audio side** — dispatched async (see its own comment for why) rather than inline. That async
   `Stop()` can still flush a frame into a callback afterward, so `AVRecordingSession::Impl` is

@@ -401,7 +401,13 @@ class VideoFrameEncoder::Impl {
         if (options_.fixedFrameSize) {
           // The session's encoded size is frozen at whatever it was on the first frame (see
           // VideoEncoderOptions) — EncodeSurface letterboxes into it below, so a raw resize or
-          // rotation just needs this bookkeeping updated, never a session rebuild.
+          // rotation just needs this bookkeeping updated, never a session rebuild. But the raw
+          // surface's seed alone doesn't change on a rotation of an otherwise-static screen (see
+          // CLAUDE.md) — force one frame through below despite the seed-equality skip, or a
+          // rotation could go uncorrected until the screen's content happens to change on its own.
+          if (rawWidth != rawSurfaceWidth_ || rawHeight != rawSurfaceHeight_ || orientation != sessionOrientation_) {
+            hasEncodedSinceSetup_ = false;
+          }
           rawSurfaceWidth_ = rawWidth;
           rawSurfaceHeight_ = rawHeight;
           sessionOrientation_ = orientation;
