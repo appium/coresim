@@ -46,9 +46,11 @@ import {
   getAppearance,
   getContentSize,
   getIncreaseContrast,
+  getOrientation,
   setAppearance,
   setContentSize,
   setIncreaseContrast,
+  setOrientation,
 } from './commands/ui.js';
 import {isVideoRecording, startVideoRecording, stopVideoRecording} from './commands/video-recording.js';
 import {startVideoStream} from './commands/video-stream.js';
@@ -229,6 +231,8 @@ Object.assign(NativeSimctl.prototype, {
   setIncreaseContrast,
   getContentSize,
   setContentSize,
+  setOrientation,
+  getOrientation,
 
   // permissions
   grantPermission,

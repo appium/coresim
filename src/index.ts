@@ -6,6 +6,7 @@ export {JpegStream} from './commands/jpeg-stream.js';
 export type {AppContainerType} from './commands/app.js';
 export type {BiometricName} from './commands/biometric.js';
 export {
+  DeviceOrientation,
   SimBootStatus,
   SimDeviceState,
   type ApnsAlert,

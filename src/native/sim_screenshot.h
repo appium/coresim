@@ -18,6 +18,11 @@ NSArray<NSDictionary*>* ListDisplays(id device, NSError** error);
 // object itself (e.g. StartVideoRecording's `screen` argument).
 id ResolveCaptureDisplay(id device, NSString* displayId, NSError** error);
 
+// The device-wide "capture service" port (real protocol: SimScreenCaptureService — see CLAUDE.md),
+// distinct from a display descriptor (see ResolveCaptureDisplay above). Found by scanning ioPorts
+// since no header exists. Throws NativeSimUnavailableError (not NSError**) if absent.
+id ResolveScreenCaptureService(id device, NSError** error);
+
 // The descriptor's current framebuffer as an `IOSurfaceRef` (bridge-cast the returned `id`).
 // Returns nil if not available yet (e.g. connection just dropped) — not an error, since that can
 // legitimately happen from one call to the next on a live device.

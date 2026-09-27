@@ -17,6 +17,13 @@ struct VideoEncoderOptions {
   NSString* displayId = nil;
   double fps = 60.0;
   int bitrate = 4000000;
+
+  // Freezes the encoded frame size at whatever it is on the first frame, forever — a rotation
+  // afterward letterboxes into that size instead of resizing the session to match. Internal-only
+  // (not JS-configurable): AVRecordingSession forces this on, since its AVAssetWriter track's
+  // dimensions are fixed for the file's life (see CLAUDE.md); a live stream has no such constraint
+  // and keeps the default (false), matching its own decoded dimensions to the actual rotation.
+  bool fixedFrameSize = false;
 };
 
 // Polls the live display IOSurface (sim_screenshot.h) on a serial queue and encodes changed

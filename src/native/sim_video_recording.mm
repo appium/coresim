@@ -8,50 +8,9 @@
 
 namespace coresim {
 
-namespace {
-
-NSString* const kVideoRecordingErrorDomain = @"io.appium.coresim.VideoRecording";
-
-NSError* MakeError(NSInteger code, NSString* message) {
-  return [NSError errorWithDomain:kVideoRecordingErrorDomain code:code userInfo:@{NSLocalizedDescriptionKey : message}];
-}
-
-id IdGetter(id target, const std::string& selectorName) {
-  RequireSelector(target, selectorName);
-  SEL selector = SelectorNamed(selectorName);
-  return SafeInvoke([&] {
-    using Fn = id (*)(id, SEL);
-    return ((Fn)objc_msgSend)(target, selector);
-  });
-}
-
-// The device-wide "capture service" port (real protocol: SimScreenCaptureService — see CLAUDE.md),
-// distinct from the display descriptor passed as `screen` below. Found by scanning ioPorts since
-// no header exists. Throws NativeSimUnavailableError (not NSError**) if absent.
-id ResolveVideoCaptureService(id device, NSError** error) {
-  static const std::string kStartRecordingSelector =
-      "startRecordingFromScreen:maskPolicy:assetWriterOutputSettings:outputFile:completionQueue:completionHandler:";
-  id ioClient = IdGetter(device, "io");
-  if (ioClient == nil) {
-    *error = MakeError(1, @"Device has no IO client available — is it booted?");
-    return nil;
-  }
-  NSArray* ports = IdGetter(ioClient, "ioPorts");
-  SEL selector = NSSelectorFromString(@(kStartRecordingSelector.c_str()));
-  for (id port in ports) {
-    id descriptor = IdGetter(port, "descriptor");
-    if (descriptor != nil && [descriptor respondsToSelector:selector]) {
-      return descriptor;
-    }
-  }
-  throw NativeSimUnavailableError("selector", kStartRecordingSelector, CoreSimulatorFrameworkVersion());
-}
-
-}  // namespace
-
 BOOL StartVideoRecording(id device, NSString* displayId, VideoMaskPolicy mask, NSDictionary* assetWriterOutputSettings,
                          NSString* outputFile, dispatch_queue_t queue, void (^handler)(NSError*), NSError** error) {
-  id captureService = ResolveVideoCaptureService(device, error);
+  id captureService = ResolveScreenCaptureService(device, error);
   if (captureService == nil) {
     return NO;
   }
@@ -71,7 +30,7 @@ BOOL StartVideoRecording(id device, NSString* displayId, VideoMaskPolicy mask, N
 }
 
 BOOL StopVideoRecording(id device, dispatch_queue_t queue, void (^handler)(NSError*), NSError** error) {
-  id captureService = ResolveVideoCaptureService(device, error);
+  id captureService = ResolveScreenCaptureService(device, error);
   if (captureService == nil) {
     return NO;
   }

@@ -12,6 +12,7 @@ import {promisify} from 'node:util';
 import {waitForCondition} from 'asyncbox';
 
 import {
+  DeviceOrientation,
   NativeSimctl,
   NativeSimError,
   NativeSimOperationError,
@@ -144,6 +145,45 @@ async function readTCCGranted(udid: string, tccService: string, bundleId: string
       `SELECT count(*) FROM access WHERE service='${tccService}' AND client='${bundleId}' AND client_type=0 AND auth_value=2`,
     )) > 0
   );
+}
+
+/** The host-side path to a device's own copy of backboardd's preference file (see sim_orientation.mm). */
+function backboardPlistPath(udid: string): string {
+  return path.join(
+    os.homedir(),
+    'Library',
+    'Developer',
+    'CoreSimulator',
+    'Devices',
+    udid,
+    'data',
+    'Library',
+    'Preferences',
+    'com.apple.backboardd.plist',
+  );
+}
+
+/**
+ * Overwrites `plistPath`'s `BKDigitizerPersistentServiceProperties` with a single fresh entry
+ * reporting `graphicsOrientation` — a way to simulate a rotation for getOrientation/video_encoder.mm
+ * to pick up without relying on setOrientation, whose mach delivery no-ops for a device created and
+ * booted in-process (see the "accepts setOrientation" test).
+ */
+async function injectGraphicsOrientation(plistPath: string, graphicsOrientation: number): Promise<void> {
+  await execFileAsync('/usr/libexec/PlistBuddy', [
+    '-c',
+    'Delete :BKDigitizerPersistentServiceProperties',
+    plistPath,
+  ]).catch(() => {});
+  for (const command of [
+    'Add :BKDigitizerPersistentServiceProperties array',
+    'Add :BKDigitizerPersistentServiceProperties:0 dict',
+    'Add :BKDigitizerPersistentServiceProperties:0:props dict',
+    `Add :BKDigitizerPersistentServiceProperties:0:props:GraphicsOrientation integer ${graphicsOrientation}`,
+  ]) {
+    await execFileAsync('/usr/libexec/PlistBuddy', ['-c', command, plistPath]);
+  }
+  await fs.promises.utimes(plistPath, new Date(), new Date());
 }
 
 interface RuntimeFixture {
@@ -658,6 +698,65 @@ describe('NativeSimctl integration', () => {
         }
       });
 
+      it('keeps a recording track at a fixed size across a mid-recording rotation', async (t) => {
+        // Regression test: an AVAssetWriter track's dimensions are fixed once the first frame is
+        // appended — a rotated frame must be letterboxed into that original size, not resized to
+        // it, or playback comes out squashed rather than erroring (see CLAUDE.md). Only the fps
+        // (AVRecordingSession/av_recording.mm) path uses AVAssetWriter — startVideoStream has no
+        // such constraint and keeps swapping dimensions on rotation, unaffected by this.
+        if (!(await hasFfmpeg())) {
+          return t.skip('ffmpeg/ffprobe not installed');
+        }
+        const outputFile = path.join(os.tmpdir(), `coresim-video-test-rotate-${Date.now()}-${process.pid}.mp4`);
+        const plistPath = backboardPlistPath(device!.udid);
+        const originalPlist = await fs.promises.readFile(plistPath).catch(() => null);
+        try {
+          try {
+            await sim.startVideoRecording(device!.udid, outputFile, {fps: 10});
+          } catch (err) {
+            if (err instanceof NativeSimUnavailableError) {
+              return t.skip(`video recording unavailable on this CoreSimulator: ${err.message}`);
+            }
+            throw err;
+          }
+          // Let the writer establish its track at the native (portrait) dimensions first.
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+          // setOrientation's mach delivery no-ops for this suite's in-process device (see the
+          // "accepts setOrientation" test) — inject the rotation instead, the same way the
+          // getOrientation staleness test does, so the encoder's poll (every 3s) picks it up.
+          await injectGraphicsOrientation(plistPath, 3);
+          await new Promise((resolve) => setTimeout(resolve, 4000));
+          await sim.stopVideoRecording(device!.udid);
+
+          const {stdout} = await execFileAsync('ffprobe', [
+            '-v',
+            'error',
+            '-select_streams',
+            'v:0',
+            '-show_entries',
+            'frame=width,height',
+            '-of',
+            'csv=p=0',
+            outputFile,
+          ]);
+          // A keyframe's row has trailing side-data fields (e.g. an SEI message) csv=p=0 still
+          // includes despite the explicit show_entries — keep only the width,height prefix.
+          const dimensions = new Set(
+            stdout
+              .trim()
+              .split('\n')
+              .filter(Boolean)
+              .map((line) => line.split(',').slice(0, 2).join('x')),
+          );
+          assert.strictEqual(dimensions.size, 1, `expected one fixed frame size throughout, got: ${[...dimensions]}`);
+        } finally {
+          await fs.promises.rm(outputFile, {force: true});
+          if (originalPlist) {
+            await fs.promises.writeFile(plistPath, originalPlist);
+          }
+        }
+      });
+
       it('records a video with audio, muxed as a second AAC track', async (t) => {
         if (IS_CI) {
           return t.skip('audio capture can block for ~180s (MACH_RCV_TIMED_OUT) on some CI runners — see CLAUDE.md');
@@ -767,6 +866,39 @@ describe('NativeSimctl integration', () => {
           } finally {
             await fs.promises.rm(rawPath, {force: true});
           }
+        }
+      });
+
+      it('keeps streaming past an orientation poll tick without crashing', async (t) => {
+        // Rotation content correctness was verified manually — this suite's shared device can't
+        // reliably rotate (see "accepts setOrientation" above). Crash-safety only: run past the
+        // poll timer's first tick (every 3s) and confirm the stream is still healthy after.
+        let stream: Awaited<ReturnType<typeof sim.startVideoStream>>;
+        try {
+          stream = await sim.startVideoStream(device!.udid, {fps: 5});
+        } catch (err) {
+          if (err instanceof NativeSimUnavailableError) {
+            return t.skip(`video streaming unavailable on this CoreSimulator: ${err.message}`);
+          }
+          throw err;
+        }
+        try {
+          await sim.setOrientation(device!.udid, DeviceOrientation.LandscapeLeft);
+          await new Promise((resolve) => setTimeout(resolve, 6000));
+          await sim.setOrientation(device!.udid, DeviceOrientation.Portrait);
+
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), 10000);
+          try {
+            for await (const unit of stream.accessUnits(controller.signal)) {
+              assert.ok(unit.data.length > 0);
+              break;
+            }
+          } finally {
+            clearTimeout(timeout);
+          }
+        } finally {
+          await stream.stop();
         }
       });
 
@@ -1031,6 +1163,50 @@ describe('NativeSimctl integration', () => {
             },
             {waitMs: 30000, intervalMs: 2000, error: 'expected openUrl to eventually succeed once the device settled'},
           );
+        });
+
+        it('accepts setOrientation for every orientation value without throwing', async () => {
+          // Not asserted against an actual screenshot rotation — this suite's throwaway device is
+          // created and booted in-process, which CoreSimulator silently no-ops mach delivery for
+          // (see CLAUDE.md). Confirmed manually, in a fresh process, that this actually rotates.
+          for (const orientation of [
+            DeviceOrientation.LandscapeLeft,
+            DeviceOrientation.LandscapeRight,
+            DeviceOrientation.PortraitUpsideDown,
+            DeviceOrientation.Portrait,
+          ]) {
+            await sim.setOrientation(device!.udid, orientation);
+          }
+        });
+
+        it('detects the device orientation via getOrientation', async () => {
+          // Not subject to the LookupMachPort staleness above (reads backboardd's own preference
+          // file directly instead) — reliably reads portrait, the default for an untouched boot.
+          assert.strictEqual(await sim.getOrientation(device!.udid), DeviceOrientation.Portrait);
+        });
+
+        it('ignores a getOrientation entry that predates the current boot', async () => {
+          // Regression test: a reboot can leave the previous boot's entry in backboardd's
+          // preference file until it rewrites it, sometimes several seconds later — getOrientation
+          // must not report that stale entry as current (see CLAUDE.md). setOrientation can't set up
+          // this scenario for real (its mach delivery no-ops for this suite's in-process device —
+          // see the test above), so the stale entry is injected directly instead.
+          const plistPath = backboardPlistPath(device!.udid);
+          const original = await fs.promises.readFile(plistPath).catch(() => null);
+          try {
+            await injectGraphicsOrientation(plistPath, 2);
+            await fs.promises.utimes(plistPath, new Date(0), new Date(0));
+            assert.strictEqual(await sim.getOrientation(device!.udid), DeviceOrientation.Portrait);
+
+            // Control: the same entry IS honored once it's no longer backdated — proves the
+            // assertion above exercises the staleness gate, not an unrelated parse failure.
+            await fs.promises.utimes(plistPath, new Date(), new Date());
+            assert.strictEqual(await sim.getOrientation(device!.udid), DeviceOrientation.PortraitUpsideDown);
+          } finally {
+            if (original) {
+              await fs.promises.writeFile(plistPath, original);
+            }
+          }
         });
 
         it('installs, inspects, launches, terminates, and removes an app', async () => {
