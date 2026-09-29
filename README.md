@@ -1,5 +1,7 @@
 # @appium/coresim
 
+> **This repository has moved.** Development now continues in the [appium-ios monorepo](https://github.com/appium/appium-ios/tree/main/packages/coresim).
+
 Fast, native control of the iOS/tvOS/watchOS/visionOS Simulator from Node.js — no `simctl`
 subprocess, no CLI output to parse.
 
